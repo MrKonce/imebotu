@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  ime-bot:
+    build: .
+    container_name: tnku_ime_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./ime_leads.db:/app/ime_leads.db
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8

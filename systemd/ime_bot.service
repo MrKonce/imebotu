@@ -1,0 +1,20 @@
+[Unit]
+Description=TNKU IME ve Staj Radar Telegram Botu (7/24 Kesintisiz Hizmet)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ime_staj_bot
+ExecStart=/root/ime_staj_bot/venv/bin/python main.py --server
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+
+# Standart çıktı ve hata loglarını journald'ye yönlendir
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+# Ortam Değişkenleri ve Gizli Anahtarlar (Kesinlikle git'e eklenmez)
+.env
+
+# Python Bytecode ve Önbellek
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Sanal Ortamlar
+venv/
+env/
+ENV/
+.venv/
+
+# Loglar ve Geçici Test Dosyaları
+*.log
+bot_error.log
+scratch/test_*.py
+scratch/check_*.py
+scratch/inspect_*.py
+
+# İşletim Sistemi Geçici Dosyaları
+.DS_Store
+Thumbs.db
