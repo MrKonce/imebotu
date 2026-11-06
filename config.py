@@ -13,20 +13,20 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 # TNKÜ E-E MÜHENDİSLİĞİ İME & STAJ KONFİGÜRASYONU
 # ==========================================
 
-# Hedef Sanayi & İlçe Lokasyonları (Trakya / Tekirdağ Havzası)
+# SADECE Okula / Kampüse Yakın Hedef Sanayi & İlçe Lokasyonları (Trakya / Tekirdağ Havzası)
 LOCATIONS = [
-    "Çorlu",
-    "Çerkezköy",
-    "Ergene",
-    "Velimeşe",
-    "Tekirdağ",
-    "Muratlı",
-    "Kapaklı",
-    "Süleymanpaşa",
-    "Marmaraereğlisi",
+    "çorlu",
+    "çerkezköy",
+    "ergene",
+    "velimeşe",
+    "tekirdağ",
+    "muratlı",
+    "kapaklı",
+    "süleymanpaşa",
+    "marmaraereğlisi",
 ]
 
-# Pozisyon ve Arama Terimleri
+# Pozisyon ve Arama Terimleri (Öğrenci & İME Odaklı)
 SEARCH_TERMS = [
     "İşletmede Mesleki Eğitim",
     "İME",
@@ -34,7 +34,7 @@ SEARCH_TERMS = [
     "Uzun Dönem Stajyer",
     "Aday Mühendis",
     "Elektrik Mühendisi Stajyer",
-    "Otomasyon Staj",
+    "Otomasyon Stajyer",
     "Elektrik Elektronik Stajyer",
     "Bakım Onarım Stajyer",
     "Ar-Ge Stajyer",
@@ -42,19 +42,18 @@ SEARCH_TERMS = [
 
 # Elektrik-Elektronik Mühendisliği Uygunluk / Skorlama Anahtar Kelimeleri ve Ağırlıkları
 EE_KEYWORD_WEIGHTS = {
-    # Doğrudan E-E ve Otomasyon Ana Dalları
     "elektrik-elektronik": 35,
     "elektrik elektronik": 35,
-    "elektrik mühendisi": 30,
-    "elektronik mühendisi": 30,
-    "otomasyon": 25,
-    "plc": 25,
-    "scada": 20,
-    "mekatronik": 20,
+    "elektrik mühendisi": 25,
+    "elektronik mühendisi": 25,
+    "otomasyon": 30,
+    "plc": 30,
+    "scada": 25,
+    "mekatronik": 25,
     "elektrik bakım": 25,
-    "bakım onarım": 18,
+    "bakım onarım": 20,
     "pano": 20,
-    "eplan": 18,
+    "eplan": 20,
     "autocad": 10,
     "gömülü": 25,
     "embedded": 25,
@@ -62,18 +61,14 @@ EE_KEYWORD_WEIGHTS = {
     "hardware": 20,
     "yüksek gerilim": 20,
     "trafo": 18,
-    "şalt": 15,
     "enerji": 15,
     "sürücü": 15,
     "inverter": 15,
     "ar-ge": 15,
-    "r&d": 15,
-    "test mühendisi": 15,
-    "kalite mühendisi": 12,
-    "üretim mühendisi": 12,
-    "elektrik teknik": 20,
-    "elektrik": 12,
-    "elektronik": 12,
+    "test": 12,
+    "üretim": 10,
+    "elektrik": 15,
+    "elektronik": 15,
 }
 
 # Telegram Bildirim Ayarları
@@ -82,11 +77,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Sunucu & Tarama Zamanlayıcı Ayarları (Server Mode)
 SCAN_INTERVAL_HOURS = int(os.getenv("SCAN_INTERVAL_HOURS", "6"))
-SERVER_MODE = os.getenv("SERVER_MODE", "polling")  # "polling" veya "webhook"
+SERVER_MODE = os.getenv("SERVER_MODE", "polling")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 PORT = int(os.getenv("PORT", "8080"))
 
-# Veritabanı Dosya Yolu (Mutlak Yol Sabitlemesi - CWD Bağımsız)
+# Veritabanı Dosya Yolu
 raw_db_path = os.getenv("DB_PATH", "ime_leads.db")
 if os.path.isabs(raw_db_path):
     DB_PATH = raw_db_path
@@ -100,26 +95,54 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
-# Alakasız / Mühendislik Dışı Meslekler (Kesin Eleme Listesi)
+# 1. Alakasız Meslekler ve Öğrenciye Uygun Olmayan Kıdemli Pozisyonlar (KESİN ELEME)
 NEGATIVE_KEYWORDS = [
-    "insan kaynakları", "human resources", "ik staj", "ik uzman",
-    "finans", "muhasebe", "accounting", "finance", "mali işler",
+    # Kıdemli / Yönetici / Şantiye (Öğrenci İME yapamaz!)
+    "şantiye şefi", "şantiye", "müdür", "yönetici", "kıdemli", "senior",
+    "direktör", "şef", "başmühendis", "bölge müdürü", "proje müdürü",
+
+    # Mühendislik Dışı Sektörler
+    "insan kaynakları", "human resources", "ik staj", "ik uzman", "insan ve kültür",
+    "finans", "muhasebe", "accounting", "finance", "mali işler", "ön muhasebe",
     "lojistik", "logistics", "depo", "sevkiyat", "ithalat", "ihracat", "dış ticaret",
     "hukuk", "avukat", "legal",
     "pazarlama", "marketing", "sosyal medya", "grafik", "tasarımcı", "reklam",
     "kurumsal iletişim", "halkla ilişkiler",
     "satış temsilcisi", "satış danışmanı", "satış elemanı", "kasiyer", "mağaza",
-    "çağrı merkezi", "call center", "müşteri temsilcisi",
+    "çağrı merkezi", "call center", "müşteri temsilcisi", "satış",
     "gayrimenkul", "emlak", "garson", "şoför", "aşçı", "mutfak",
     "güvenlik", "temizlik", "kurye", "vale",
     "diş hekimi", "dental", "veteriner", "eczacı", "eczane", "hemşire", "hasta kabul",
-    "doktor", "sağlık personeli", "çocuk gelişim", "öğretmen"
+    "doktor", "sağlık personeli", "çocuk gelişim", "öğretmen", "parfüm", "gıda stajyeri"
 ]
 
+# 2. Kesinlikle Elenecek Tekirdağ Dışı Şehirler
 WRONG_CITIES = [
-    "izmir", "ankara", "bursa", "antalya", "adana", "eskişehir",
-    "kayseri", "konya", "gaziantep", "trabzon", "samsun", "diyarbakır"
+    "gaziantep", "samsun", "izmir", "ankara", "kocaeli", "bursa", "adana",
+    "konya", "antalya", "eskişehir", "trabzon", "diyarbakır", "kayseri",
+    "mersin", "denizli", "sakarya", "manisa", "balıkesir", "aydın", "muğla",
+    "hatay", "çorum", "sivas", "malatya", "şanlıurfa", "kahramanmaraş", "van",
+    "istanbul"
 ]
+
+
+def normalize_tr(text: str) -> str:
+    """Türkçe İ, I, Ş, Ğ, Ü, Ö, Ç karakterlerini standart küçük harfe dönüştürür."""
+    if not text:
+        return ""
+    mapping = {
+        "İ": "i",
+        "I": "ı",
+        "Ş": "ş",
+        "Ğ": "ğ",
+        "Ü": "ü",
+        "Ö": "ö",
+        "Ç": "ç",
+    }
+    res = text
+    for upper, lower in mapping.items():
+        res = res.replace(upper, lower)
+    return res.lower()
 
 
 def calculate_relevance_score(
@@ -130,68 +153,90 @@ def calculate_relevance_score(
     created_at: str = None
 ) -> int:
     """
-    TNKÜ E-E Mühendisliği 4. sınıf İME öğrencisi için hassas puanlama algoritması:
-    - Mühendislik dışı bölümleri (İK, Finans, Lojistik vb.) doğrudan 0 puanla eler.
-    - E-E, Otomasyon, PLC, Bakım ve İME terimlerine yüksek öncelik verir.
-    - Canlı kariyer portallarındaki aktif ilanlara ve güncelliğe (tazeliğe) ek puan katar.
-    - 0 - 100 arasında normalize bir uygunluk skoru döndürür.
+    TNKÜ E-E 4. sınıf İME öğrencisi için sert ve tavizsiz puanlama motoru:
+    1. Lokasyon: SADECE Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe havzası.
+       Başka şehir ise veya doğrulanmamışsa PUAN = 0 (ELENİR).
+    2. Kıdem/Rol: Şantiye şefi, yönetici, kıdemli ise PUAN = 0 (ELENİR).
+    3. Rol Uyumu: İME, Staj, Aday Mühendis, Öğrenci pozisyonları zirveye taşınır.
     """
-    title_lower = title.lower()
-    combined_content = f"{title} {text}".lower()
+    title_norm = normalize_tr(title)
+    text_norm = normalize_tr(text)
+    loc_norm = normalize_tr(location)
+    combined = f"{title_norm} {text_norm} {loc_norm}"
 
-    # 1. Alakasız meslekleri doğrudan ele
+    # 1. Kıdemli veya alakasız meslekleri doğrudan ele
     for neg in NEGATIVE_KEYWORDS:
-        if neg in title_lower:
+        neg_norm = normalize_tr(neg)
+        if neg_norm in title_norm or neg_norm in text_norm:
             return 0
 
-    # 2. Hedef dışı uzak şehirler (Tekirdağ / Trakya geçmiyorsa ele)
-    loc_clean = (location or "").lower()
-    if any(wc in loc_clean for wc in WRONG_CITIES) and not any(loc.lower() in loc_clean for loc in LOCATIONS):
+    # 2. Lokasyon Kontrolü: Kesinlikle Tekirdağ / Çorlu / Çerkezköy havzasında olmalı
+    if any(normalize_tr(wc) in combined for wc in WRONG_CITIES):
+        # Tekirdağ açıkça geçmiyorsa ele
+        if not any(normalize_tr(loc) in combined for loc in LOCATIONS):
+            return 0
+
+    # Hedef lokasyonlardan en az biri açıkça doğrulanmalı (OSB hedefleri zaten lokasyonludur)
+    is_valid_location = any(normalize_tr(loc) in combined for loc in LOCATIONS)
+    if not is_valid_location and "OSB Rehberi" not in source:
+        return 0
+
+    # 3. Öğrenci / İME / Stajyer Format Kontrolü (HAYATİ ÖNEMDE)
+    is_intern = (
+        re.search(r"\bime\b", title_norm)
+        or "işletmede mesleki eğitim" in title_norm
+        or "staj" in title_norm
+        or "intern" in title_norm
+        or "aday mühendis" in title_norm
+        or "candidate engineer" in title_norm
+        or "öğrenci" in title_norm
+        or "genç yetenek" in title_norm
+        or "uzun dönem" in title_norm
+        or "OSB Rehberi" in source  # OSB hedefleri zaten öğrenci İME başvuru fabrikalarıdır
+    )
+
+    # İME/Staj içermeyen tam zamanlı tecrübeli mühendis ilanları elenir
+    if not is_intern:
         return 0
 
     score = 0
 
-    # 3. Anahtar kelime eşleşmeleri
+    # 4. İME & Stajyerlik Türü Puanları
+    if re.search(r"\bime\b", title_norm) or "işletmede mesleki eğitim" in title_norm:
+        score += 45
+    elif "aday mühendis" in title_norm or "candidate engineer" in title_norm:
+        score += 40
+    elif "uzun dönem" in title_norm:
+        score += 35
+    elif "staj" in title_norm or "intern" in title_norm:
+        score += 30
+
+    # 5. E-E ve Otomasyon Alan Uyumu
     for kw, weight in EE_KEYWORD_WEIGHTS.items():
-        if len(kw) <= 4:
-            if re.search(r"\b" + re.escape(kw) + r"\b", combined_content):
+        kw_norm = normalize_tr(kw)
+        if len(kw_norm) <= 4:
+            if re.search(r"\b" + re.escape(kw_norm) + r"\b", combined):
                 score += weight
         else:
-            if kw in combined_content:
+            if kw_norm in combined:
                 score += weight
 
-    # 4. Program ve İlan Tipi Ağırlıkları
-    if re.search(r"\bime\b", title_lower) or "işletmede mesleki eğitim" in title_lower:
-        score += 35
-    elif "aday mühendis" in title_lower or "candidate engineer" in title_lower:
-        score += 25
-    elif "uzun dönem" in title_lower:
-        score += 20
-    elif "staj" in title_lower or "intern" in title_lower:
+    # 6. Bölge Uyumu (+15 puan)
+    if any(normalize_tr(loc) in combined for loc in LOCATIONS):
         score += 15
 
-    # 5. Hedef Lokasyon Eşleşmesi (+15 bonus)
-    loc_lower = f"{location} {combined_content}".lower()
-    if any(loc.lower() in loc_lower for loc in LOCATIONS):
-        score += 15
+    # 7. OSB Kurumsal Fabrikaları (BSH, Arçelik, Lila vb.) Taban İME Puanı
+    if "OSB Rehberi" in source:
+        score = max(score, 90)
 
-    # 6. Canlı ve Aktif İlan Bonusu (+15 bonus - Şu an işe alım yapan platformlar)
-    if source and "OSB Rehberi" not in source:
-        score += 15
-
-    # 7. Güncellik / Tazelik Bonusu
+    # 8. Güncellik Bonusu (Son 3 gün: +10)
     if created_at:
         try:
             created_dt = datetime.strptime(str(created_at).split(".")[0], "%Y-%m-%d %H:%M:%S")
             diff_days = abs((datetime.now() - created_dt).total_seconds()) / 86400.0
             if diff_days <= 3.0:
-                score += 15
-            elif diff_days <= 7.0:
                 score += 10
-            elif diff_days <= 14.0:
-                score += 5
         except Exception:
             pass
 
-    # Maksimum 100 puan ile sınırla
     return min(100, max(0, score))

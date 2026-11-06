@@ -1,7 +1,7 @@
 """
 Kariyer Portalları Kazıyıcı Modülü (Kariyer.net + LinkedIn)
-- Kariyer.net: Mobil arayüz (m.kariyer.net) üzerinden captcha engeline takılmadan doğrudan ilanları çeker.
-- LinkedIn: Public guest jobs API üzerinden Çorlu, Çerkezköy ve Tekirdağ ilanlarını çeker.
+TNKÜ E-E İME Öğrencisi için SIKI LOKASYON (Tekirdağ / Çorlu / Çerkezköy / OSB) ve STAJ / İME odaklıdır.
+Gaziantep, Samsun, İzmir veya İstanbul gibi uzak şehirler ve şantiye şefi/kıdemli pozisyonlar elenir.
 """
 
 import sys
@@ -13,11 +13,13 @@ from bs4 import BeautifulSoup
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
 from config import (
     LOCATIONS,
+    WRONG_CITIES,
     USER_AGENT,
     REQUEST_TIMEOUT,
     calculate_relevance_score,
@@ -37,14 +39,15 @@ DESKTOP_HEADERS = {
 
 
 # =============================================================================
-# 1. Kariyer.net Kazıyıcı (Mobil Web - Hızlı & Engel Yok)
+# 1. Kariyer.net Kazıyıcı (Mobil Web - Doğrudan Tekirdağ / Çorlu / Çerkezköy Filtreli)
 # =============================================================================
 
 def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> List[Dict[str, Any]]:
-    """m.kariyer.net üzerinden ilanları arar ve ayrıştırır."""
+    """m.kariyer.net üzerinden doğrudan Tekirdağ il ve ilçe yollarıyla arar."""
     results: List[Dict[str, Any]] = []
     encoded_kw = urllib.parse.quote(query)
-    url = f"https://m.kariyer.net/is-ilanlari?kw={encoded_kw}&c={location_slug}"
+    # Doğru Kariyer.net mobil URL yapısı: /is-ilanlari/{sehir}?kw={kelime}
+    url = f"https://m.kariyer.net/is-ilanlari/{location_slug}?kw={encoded_kw}"
 
     try:
         resp = requests.get(url, headers=MOBILE_HEADERS, timeout=REQUEST_TIMEOUT)
@@ -65,67 +68,102 @@ def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> Lis
             raw_text = a.get_text(" | ", strip=True)
             parts = [p.strip() for p in raw_text.split("|") if p.strip()]
 
-            # Başlık ve firma tespiti
-            # Sponsorlu ilan ibaresini temizle
-            clean_parts = [p for p in parts if "Sponsorlu" not in p and "update" not in p.lower()]
-            if not clean_parts:
+            # Sponsorlu ve gereksiz etiketleri temizle
+            clean_parts = [
+                p for p in parts
+                if "Sponsorlu" not in p and "update" not in p.lower() and p not in ["B", "T", "accessible"]
+            ]
+            if len(clean_parts) < 2:
                 continue
 
             title = clean_parts[0]
             company = clean_parts[1] if len(clean_parts) > 1 else "Kariyer.net İlanı"
 
-            # Lokasyon tespiti
-            detected_loc = "Tekirdağ / Çorlu"
             full_context = f"{title} {company} {' '.join(clean_parts)}".lower()
+
+            # 1. Uzak Şehir Filtresi: Gaziantep, Samsun, İzmir vb. kesinlikle elenir!
+            if any(wc in full_context for wc in WRONG_CITIES):
+                # Tekirdağ açıkça geçmiyorsa ele
+                if not any(loc.lower() in full_context for loc in LOCATIONS):
+                    continue
+
+            # 2. Lokasyon Doğrulaması: Tekirdağ / Çorlu / Çerkezköy vb. içermiyorsa ASLA kabul etme
+            matched_loc = None
             for loc in LOCATIONS:
                 if loc.lower() in full_context:
-                    detected_loc = loc
+                    matched_loc = loc
                     break
 
-            # Uygunluk skoru
-            score = calculate_relevance_score(title, " ".join(clean_parts), detected_loc)
+            if not matched_loc:
+                # Kesinlikle Tekirdağ dışı, ATLA! (Eski hatadaki gibi Çorlu varsayımı YAPMA)
+                continue
 
-            # Minimum eşik (en az 25 puan veya elektrik/staj/mühendislik içermesi)
+            # 3. Kıdemli / Şantiye Şefi / Yönetici pozisyonlarını ele
+            if any(s in title.lower() for s in ["şantiye şefi", "şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "başmühendis"]):
+                continue
+
+            # 4. Uygunluk skoru hesapla
+            score = calculate_relevance_score(
+                title=title,
+                text=" ".join(clean_parts),
+                location=matched_loc,
+                source="Kariyer.net"
+            )
+
+            # Skor 0 ise (alakasız sektör, kıdemli veya staj dışı) ekleme
+            if score <= 0:
+                continue
+
             results.append({
                 "company": company,
                 "title": title,
-                "location": detected_loc,
+                "location": f"Tekirdağ / {matched_loc}" if matched_loc != "Tekirdağ" else "Tekirdağ",
                 "url": full_url,
                 "source": "Kariyer.net",
                 "relevance_score": score,
-                "snippet": f"Kariyer.net ilanı - {company} ({detected_loc})",
+                "notes": f"Kariyer.net ilanı - {company} ({matched_loc})",
             })
     except Exception as e:
-        print(f"[UYARI] Kariyer.net arama hatası ({query}): {e}")
+        print(f"[UYARI] Kariyer.net arama hatası ({query} - {location_slug}): {e}")
 
     return results
 
 
 def fetch_kariyernet_all() -> List[Dict[str, Any]]:
-    """Tüm hedef anahtar kelimeler ile Kariyer.net'i tarar."""
+    """Tüm hedef staj/İME anahtar kelimeleri ile Tekirdağ, Çorlu ve Çerkezköy'ü tarar."""
     queries = [
-        "stajyer elektrik",
-        "stajyer otomasyon",
+        "stajyer",
+        "staj",
         "aday mühendis",
-        "uzun dönem stajyer",
+        "uzun dönem",
         "İME",
-        "elektrik mühendisi",
+        "işletmede mesleki eğitim",
+        "elektrik stajyer",
+        "otomasyon stajyer",
+        "elektrik bakım",
     ]
+    city_slugs = [
+        "tekirdag",
+        "tekirdag-corlu",
+        "tekirdag-cerkezkoy",
+    ]
+
     all_jobs: Dict[str, Dict[str, Any]] = {}
-    print("[Kariyer.net] İlanlar taranıyor (m.kariyer.net)...")
+    print("[Kariyer.net] Doğrulanmış Tekirdağ & Çorlu & Çerkezköy staj/İME ilanları taranıyor...")
 
-    for q in queries:
-        found = _fetch_kariyernet_search(q, "tekirdag")
-        for job in found:
-            if job["url"] not in all_jobs:
-                all_jobs[job["url"]] = job
+    for city in city_slugs:
+        for q in queries:
+            found = _fetch_kariyernet_search(query=q, location_slug=city)
+            for job in found:
+                if job["url"] not in all_jobs:
+                    all_jobs[job["url"]] = job
 
-    print(f"[Kariyer.net] Toplam {len(all_jobs)} tekil ilan bulundu.")
+    print(f"[Kariyer.net] Toplam {len(all_jobs)} doğrulanmış yerel staj/İME ilanı bulundu.")
     return list(all_jobs.values())
 
 
 # =============================================================================
-# 2. LinkedIn Public Jobs API
+# 2. LinkedIn Public Jobs API (Tekirdağ / Çorlu / Çerkezköy Kesin Eşleşme)
 # =============================================================================
 
 def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[str, Any]]:
@@ -165,13 +203,35 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
                 continue
             seen_urls.add(href)
 
-            # Lokasyon filtresi
             loc_check = f"{title} {company} {job_loc}".lower()
-            location_match = any(loc.lower() in loc_check for loc in LOCATIONS)
-            score = calculate_relevance_score(title, company, job_loc)
 
-            # Lokasyon uymuyorsa ve skor düşükse ele
-            if not location_match and score < 30:
+            # 1. Uzak şehir filtresi
+            if any(wc in loc_check for wc in WRONG_CITIES):
+                if not any(loc.lower() in loc_check for loc in LOCATIONS):
+                    continue
+
+            # 2. Kesin Lokasyon Doğrulaması (Esenyurt, İstanbul vb. elenir)
+            matched_loc = None
+            for loc in LOCATIONS:
+                if loc.lower() in loc_check:
+                    matched_loc = loc
+                    break
+
+            if not matched_loc:
+                continue
+
+            # 3. Kıdemli pozisyonları ele
+            if any(s in title.lower() for s in ["şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör"]):
+                continue
+
+            score = calculate_relevance_score(
+                title=title,
+                text=company,
+                location=job_loc,
+                source="LinkedIn"
+            )
+
+            if score <= 0:
                 continue
 
             results.append({
@@ -181,7 +241,7 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
                 "url": href,
                 "source": "LinkedIn",
                 "relevance_score": score,
-                "snippet": f"LinkedIn ilanı - {company} ({job_loc})",
+                "notes": f"LinkedIn ilanı - {company} ({job_loc})",
             })
     except Exception as e:
         print(f"[UYARI] LinkedIn arama hatası ({query}): {e}")
@@ -190,16 +250,15 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
 
 
 def fetch_linkedin_all() -> List[Dict[str, Any]]:
-    """Tüm hedef kelimeler ile LinkedIn'den uygun ilanları tarar."""
+    """LinkedIn üzerinden SADECE yerel Tekirdağ / Çorlu / Çerkezköy stajyer ilanlarını arar."""
     queries = [
-        ("stajyer elektrik", "Tekirdağ"),
-        ("stajyer otomasyon", "Çorlu"),
-        ("aday mühendis elektrik", "Tekirdağ"),
-        ("stajyer elektronik", "Çorlu"),
-        ("intern engineering", "Çerkezköy"),
+        ("stajyer", "Tekirdağ"),
+        ("intern", "Tekirdağ"),
+        ("uzun dönem stajyer", "Çorlu"),
+        ("aday mühendis", "Çerkezköy"),
     ]
     all_jobs: Dict[str, Dict[str, Any]] = {}
-    print("[LinkedIn] İlanlar taranıyor...")
+    print("[LinkedIn] Yerel stajyer/aday mühendis ilanları taranıyor...")
 
     for kw, loc in queries:
         found = _fetch_linkedin_jobs(kw, loc)
@@ -207,7 +266,7 @@ def fetch_linkedin_all() -> List[Dict[str, Any]]:
             if job["url"] not in all_jobs:
                 all_jobs[job["url"]] = job
 
-    print(f"[LinkedIn] Toplam {len(all_jobs)} tekil ilan bulundu.")
+    print(f"[LinkedIn] Toplam {len(all_jobs)} tekil yerel ilan bulundu.")
     return list(all_jobs.values())
 
 
@@ -216,18 +275,15 @@ def fetch_linkedin_all() -> List[Dict[str, Any]]:
 # =============================================================================
 
 def fetch_all_portal_jobs() -> List[Dict[str, Any]]:
-    """Kariyer.net ve LinkedIn portallarından tüm uygun ilanları birleştirir."""
+    """Kariyer.net ve LinkedIn portallarından filtrelenmiş yerel staj/İME ilanlarını toplar."""
     all_jobs: Dict[str, Dict[str, Any]] = {}
 
-    # Kariyer.net
     for job in fetch_kariyernet_all():
         if job["url"] not in all_jobs:
             all_jobs[job["url"]] = job
 
-    # LinkedIn
     for job in fetch_linkedin_all():
         if job["url"] not in all_jobs:
             all_jobs[job["url"]] = job
 
-    print(f"[PORTAL TOPLAM] {len(all_jobs)} tekil ilan toplandı.")
     return list(all_jobs.values())
