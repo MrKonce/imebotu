@@ -40,7 +40,25 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("TNKU IME ve Staj Telegram Robotu 7/24 Calisiyor!\n".encode("utf-8"))
+        top_info = "Yok"
+        total = 0
+        try:
+            database.init_db()
+            ranked = database.get_ranked_leads(limit=1)
+            if ranked:
+                top_info = f"{ranked[0]['company']} | {ranked[0]['title']} ({ranked[0]['location']})"
+            stats = database.get_statistics()
+            total = stats.get("total_leads", 0)
+        except Exception as e:
+            top_info = f"Hata: {e}"
+
+        body = (
+            f"TNKU IME ve Staj Telegram Robotu 7/24 Calisiyor!\n"
+            f"Surum: v2.1-strict-tekirdag-only\n"
+            f"Toplam Aktif Yerel Firsat: {total}\n"
+            f"1 Numarali Ilan: {top_info}\n"
+        )
+        self.wfile.write(body.encode("utf-8"))
 
     def do_HEAD(self):
         self.send_response(200)
@@ -393,6 +411,15 @@ class TelegramBotListener:
             self.handle_scan()
         elif clean_text in ["/durum", "/stats", "durum", "istatistik"]:
             self.handle_status()
+        elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu"]:
+            purged = database.purge_invalid_leads()
+            self.send_message(
+                f"🧹 <b>Veritabanı Sıfırlandı ve Temizlendi!</b>\n"
+                f"Alakasız şehirler (İzmir, Ankara, Gaziantep vb.) ve öğrenciye uygun olmayan pozisyonlar silindi.\n"
+                f"Temizlenen geçersiz kayıt: {purged}\n\n"
+                f"Güncel ve doğrulanmış Tekirdağ/Çorlu İME listesini görmek için <b>/rapor</b> veya <b>'ilk 25'</b> yazabilirsiniz.",
+                reply_markup=get_control_panel_keyboard()
+            )
         elif clean_text in ["/menu", "/panel", "/ekran", "menu", "panel", "ekran", "/start", "/help", "/yardim", "yardım"]:
             self.send_control_panel()
         else:

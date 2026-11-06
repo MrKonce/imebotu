@@ -16,9 +16,7 @@ ENV/
 # Loglar ve Geçici Test Dosyaları
 *.log
 bot_error.log
-scratch/test_*.py
-scratch/check_*.py
-scratch/inspect_*.py
+scratch/
 
 # İşletim Sistemi Geçici Dosyaları
 .DS_Store

@@ -98,8 +98,12 @@ def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> Lis
                 # Kesinlikle Tekirdağ dışı, ATLA! (Eski hatadaki gibi Çorlu varsayımı YAPMA)
                 continue
 
-            # 3. Kıdemli / Şantiye Şefi / Yönetici pozisyonlarını ele
-            if any(s in title.lower() for s in ["şantiye şefi", "şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "başmühendis"]):
+            # 3. Kıdemli / Şantiye Şefi / Yönetici pozisyonlarını ve bilinen hatalı firmaları ele
+            company_lower = company.lower()
+            if any(bad in company_lower for bad in ["dh teknik", "şara", "sara", "akbaş", "green diamond", "remax"]):
+                continue
+
+            if any(s in title.lower() for s in ["şantiye şefi", "şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "başmühendis", "gayrimenkul"]):
                 continue
 
             # 4. Uygunluk skoru hesapla
@@ -220,8 +224,12 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
             if not matched_loc:
                 continue
 
-            # 3. Kıdemli pozisyonları ele
-            if any(s in title.lower() for s in ["şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör"]):
+            # 3. Kıdemli pozisyonları ve bilinen alakasız firmaları ele
+            company_lower = company.lower()
+            if any(bad in company_lower for bad in ["dh teknik", "şara", "sara", "akbaş", "green diamond", "remax"]):
+                continue
+
+            if any(s in title.lower() for s in ["şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "gayrimenkul"]):
                 continue
 
             score = calculate_relevance_score(

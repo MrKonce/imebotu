@@ -51,9 +51,61 @@ def rescore_all_leads(db_path: str = DB_PATH) -> int:
     return updated_count
 
 
+def purge_invalid_leads(db_path: str = DB_PATH) -> int:
+    """
+    Veritabanındaki alakasız şehirleri (İzmir, Ankara, Gaziantep vb.),
+    kıdemli / şantiye pozisyonlarını ve geçersiz kayıtları tamamen temizler.
+    Sadece Tekirdağ / Çorlu / ÇOSB / Ergene / Velimeşe / Muratlı sanayi havzasına ait
+    öğrenci ve İME stajyer fırsatlarını bırakır.
+    """
+    rescore_all_leads(db_path)
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM leads
+            WHERE source NOT LIKE 'OSB Rehberi%'
+              AND (
+                  is_active = 0
+                  OR relevance_score < 30
+                  OR LOWER(title) LIKE '%şantiye%'
+                  OR LOWER(title) LIKE '%müdür%'
+                  OR LOWER(title) LIKE '%kıdemli%'
+                  OR LOWER(title) LIKE '%senior%'
+                  OR LOWER(title) LIKE '%gayrimenkul%'
+                  OR LOWER(company) LIKE '%dh teknik%'
+                  OR LOWER(company) LIKE '%şara%'
+                  OR LOWER(company) LIKE '%sara%'
+                  OR LOWER(company) LIKE '%akbaş%'
+                  OR LOWER(company) LIKE '%green diamond%'
+                  OR LOWER(company) LIKE '%remax%'
+                  OR LOWER(company) LIKE '%aselsan gaziantep%'
+                  OR (
+                      LOWER(location) NOT LIKE '%tekirdağ%'
+                      AND LOWER(location) NOT LIKE '%çorlu%'
+                      AND LOWER(location) NOT LIKE '%çerkezköy%'
+                      AND LOWER(location) NOT LIKE '%ergene%'
+                      AND LOWER(location) NOT LIKE '%velimeşe%'
+                      AND LOWER(location) NOT LIKE '%muratlı%'
+                      AND LOWER(location) NOT LIKE '%kapaklı%'
+                      AND LOWER(location) NOT LIKE '%süleymanpaşa%'
+                  )
+                  OR LOWER(location) LIKE '%izmir%'
+                  OR LOWER(location) LIKE '%ankara%'
+                  OR LOWER(location) LIKE '%gaziantep%'
+                  OR LOWER(location) LIKE '%samsun%'
+                  OR LOWER(location) LIKE '%esenyurt%'
+              )
+            """
+        )
+        purged = cursor.rowcount
+        conn.commit()
+    return purged
+
+
 def init_db(db_path: str = DB_PATH) -> None:
     """
-    Veritabanı tablolarını, gerekli indeksleri ve migrasyonları hazırlar.
+    Veritabanı tablolarını, gerekli indeksleri, migrasyonları ve temizlikleri hazırlar.
     """
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -99,6 +151,12 @@ def init_db(db_path: str = DB_PATH) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(source)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_active ON leads(is_active)")
         conn.commit()
+
+    # Başlangıçta eski veya alakasız şehir kayıtlarını otomatik ayıkla
+    try:
+        purge_invalid_leads(db_path)
+    except Exception as e:
+        print(f"[UYARI] Otomatik lead temizliği geçici hata: {e}")
 
 
 def lead_exists(url: str, db_path: str = DB_PATH) -> bool:
@@ -275,18 +333,46 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
     Kullanıcının talep ettiği adette (10, 25, 50, 100 vb.) en güncel çalışan ve
     TNKÜ E-E İME profiline en uygun ilanları kusursuz sıralamayla çeker.
     
-    Sıralama Algoritması:
-    1. E-E Mühendisliği + Otomasyon + PLC + İME yetkinlik uyumu
-    2. Güncellik / Tazelik (Bugün ve bu hafta çıkan ilanlar zirvede)
-    3. Aktif kariyer portalları canlı ilan önceliği
-    4. Yüksek uygunluklu OSB kurumsal üretim tesisleri
+    Sıralama ve Filtreleme Kriterleri:
+    - Kesinlikle sadece Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe / Muratlı sanayi havzası
+    - İzmir, Ankara, Gaziantep, Samsun, Esenyurt vb. uzak şehirler SQL seviyesinde KESİNLİKLE ENGELLENİR.
+    - Kıdemli, şantiye şefi, müdür ve stajyer/öğrenci dışı ilanlar elenir.
+    - Bel Karper, Zorluteks, Dinarsu, GF Hakan, EAE Elektrik gibi 1. sınıf OSB İME fırsatları önceliklidir.
     """
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             SELECT * FROM leads
-            WHERE is_active = 1 AND relevance_score >= 15
+            WHERE is_active = 1
+              AND relevance_score >= 30
+              AND LOWER(company) NOT LIKE '%dh teknik%'
+              AND LOWER(company) NOT LIKE '%şara%'
+              AND LOWER(company) NOT LIKE '%sara%'
+              AND LOWER(company) NOT LIKE '%akbaş%'
+              AND LOWER(company) NOT LIKE '%green diamond%'
+              AND LOWER(company) NOT LIKE '%remax%'
+              AND LOWER(title) NOT LIKE '%şantiye%'
+              AND LOWER(title) NOT LIKE '%müdür%'
+              AND LOWER(title) NOT LIKE '%kıdemli%'
+              AND LOWER(title) NOT LIKE '%senior%'
+              AND LOWER(title) NOT LIKE '%gayrimenkul%'
+              AND (
+                  LOWER(location) LIKE '%tekirdağ%'
+                  OR LOWER(location) LIKE '%çorlu%'
+                  OR LOWER(location) LIKE '%çerkezköy%'
+                  OR LOWER(location) LIKE '%ergene%'
+                  OR LOWER(location) LIKE '%velimeşe%'
+                  OR LOWER(location) LIKE '%muratlı%'
+                  OR LOWER(location) LIKE '%kapaklı%'
+                  OR LOWER(location) LIKE '%süleymanpaşa%'
+                  OR source LIKE 'OSB Rehberi%'
+              )
+              AND LOWER(location) NOT LIKE '%izmir%'
+              AND LOWER(location) NOT LIKE '%ankara%'
+              AND LOWER(location) NOT LIKE '%gaziantep%'
+              AND LOWER(location) NOT LIKE '%samsun%'
+              AND LOWER(location) NOT LIKE '%esenyurt%'
             ORDER BY relevance_score DESC, created_at DESC
             LIMIT ?
             """,
@@ -329,19 +415,19 @@ def update_lead_status(
 
 
 def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
-    """Sistemdeki toplam ilan ve başvuru istatistiklerini hesaplar."""
+    """Sistemdeki toplam doğrulanmış yerel ilan ve başvuru istatistiklerini hesaplar."""
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 15")
+        cursor.execute("SELECT COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
         total = cursor.fetchone()[0]
 
-        cursor.execute("SELECT status, COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 15 GROUP BY status")
+        cursor.execute("SELECT status, COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 30 GROUP BY status")
         by_status = dict(cursor.fetchall())
 
-        cursor.execute("SELECT AVG(relevance_score) FROM leads WHERE is_active = 1 AND relevance_score >= 15")
+        cursor.execute("SELECT AVG(relevance_score) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
         avg_score = cursor.fetchone()[0] or 0.0
 
-        cursor.execute("SELECT COUNT(DISTINCT company) FROM leads WHERE is_active = 1 AND relevance_score >= 15")
+        cursor.execute("SELECT COUNT(DISTINCT company) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
         unique_companies = cursor.fetchone()[0]
 
         # Son 3 gün içinde eklenen taze ilan sayısı
@@ -349,7 +435,7 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
             """
             SELECT COUNT(*) FROM leads
             WHERE is_active = 1
-              AND relevance_score >= 15
+              AND relevance_score >= 30
               AND source NOT LIKE 'OSB Rehberi%'
               AND (julianday('now') - julianday(created_at)) <= 3.0
             """
