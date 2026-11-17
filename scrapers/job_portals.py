@@ -23,6 +23,7 @@ from config import (
     USER_AGENT,
     REQUEST_TIMEOUT,
     calculate_relevance_score,
+    validate_strict_location,
 )
 
 MOBILE_HEADERS = {
@@ -34,23 +35,27 @@ MOBILE_HEADERS = {
 DESKTOP_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
 
 
 # =============================================================================
-# 1. Kariyer.net Kazıyıcı (Mobil Web - Doğrudan Tekirdağ / Çorlu / Çerkezköy Filtreli)
+# 1. Kariyer.net Kazıyıcı (Masaüstü & Detay DOM Lokasyon Ayrıştırma)
 # =============================================================================
 
 def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> List[Dict[str, Any]]:
-    """m.kariyer.net üzerinden doğrudan Tekirdağ il ve ilçe yollarıyla arar."""
+    """
+    Kariyer.net üzerinden doğrudan Tekirdağ/Çorlu/Çerkezköy araması yapar.
+    Arama parametrelerine veya metadata'ya ASLA güvenmez;
+    İlanın detay sayfasındaki gerçek DOM lokasyon (.company-location) alanını çeker.
+    Türkiye Geneli, Adana veya 81 şehirli sahte ilanları KESİNLİKLE reddeder.
+    """
     results: List[Dict[str, Any]] = []
     encoded_kw = urllib.parse.quote(query)
-    # Doğru Kariyer.net mobil URL yapısı: /is-ilanlari/{sehir}?kw={kelime}
-    url = f"https://m.kariyer.net/is-ilanlari/{location_slug}?kw={encoded_kw}"
+    url = f"https://www.kariyer.net/is-ilanlari/{location_slug}?kw={encoded_kw}"
 
     try:
-        resp = requests.get(url, headers=MOBILE_HEADERS, timeout=REQUEST_TIMEOUT)
+        resp = requests.get(url, headers=DESKTOP_HEADERS, timeout=REQUEST_TIMEOUT)
         if resp.status_code != 200:
             return results
 
@@ -68,66 +73,80 @@ def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> Lis
             raw_text = a.get_text(" | ", strip=True)
             parts = [p.strip() for p in raw_text.split("|") if p.strip()]
 
-            # Sponsorlu ve gereksiz etiketleri temizle
             clean_parts = [
                 p for p in parts
                 if "Sponsorlu" not in p and "update" not in p.lower() and p not in ["B", "T", "accessible"]
             ]
-            if len(clean_parts) < 2:
-                continue
+            fallback_title = clean_parts[0] if clean_parts else "Stajyer / İME"
+            fallback_company = clean_parts[1] if len(clean_parts) > 1 else "Kariyer.net İlanı"
 
-            title = clean_parts[0]
-            company = clean_parts[1] if len(clean_parts) > 1 else "Kariyer.net İlanı"
+            # 1. Gerçek DOM Verisini Çek (İlanın Detay Sayfasından)
+            real_loc = ""
+            real_title = fallback_title
+            real_company = fallback_company
+            real_desc = " ".join(clean_parts)
 
-            full_context = f"{title} {company} {' '.join(clean_parts)}".lower()
+            try:
+                det_resp = requests.get(full_url, headers=DESKTOP_HEADERS, timeout=6)
+                if det_resp.status_code == 200:
+                    dsoup = BeautifulSoup(det_resp.text, "html.parser")
+                    # Detay sayfasındaki asıl lokasyon elemanı
+                    loc_el = dsoup.select_one(".company-location, [data-test*='location']")
+                    if loc_el:
+                        real_loc = loc_el.get_text(" ", strip=True)
 
-            # 1. Uzak Şehir Filtresi: Gaziantep, Samsun, İzmir vb. kesinlikle elenir!
-            if any(wc in full_context for wc in WRONG_CITIES):
-                # Tekirdağ açıkça geçmiyorsa ele
-                if not any(loc.lower() in full_context for loc in LOCATIONS):
-                    continue
+                    title_el = dsoup.select_one("h1, [data-test*='job-title']")
+                    if title_el and title_el.get_text(strip=True):
+                        real_title = title_el.get_text(strip=True)
 
-            # 2. Lokasyon Doğrulaması: Tekirdağ / Çorlu / Çerkezköy vb. içermiyorsa ASLA kabul etme
-            matched_loc = None
-            for loc in LOCATIONS:
-                if loc.lower() in full_context:
-                    matched_loc = loc
-                    break
+                    comp_el = dsoup.select_one(".company-name, [data-test*='company-name']")
+                    if comp_el and comp_el.get_text(strip=True):
+                        real_company = comp_el.get_text(strip=True)
+            except Exception:
+                pass
 
-            if not matched_loc:
-                # Kesinlikle Tekirdağ dışı, ATLA! (Eski hatadaki gibi Çorlu varsayımı YAPMA)
-                continue
+            # Eğer detay sayfası engellendiyse liste kartındaki metni al
+            if not real_loc:
+                real_loc = " ".join(clean_parts)
 
-            # 3. Kıdemli / Şantiye Şefi / Yönetici pozisyonlarını ve bilinen hatalı firmaları ele
-            company_lower = company.lower()
-            if any(bad in company_lower for bad in ["dh teknik", "şara", "sara", "akbaş", "green diamond", "remax"]):
-                continue
-
-            if any(s in title.lower() for s in ["şantiye şefi", "şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "başmühendis", "gayrimenkul"]):
-                continue
-
-            # 4. Uygunluk skoru hesapla
-            score = calculate_relevance_score(
-                title=title,
-                text=" ".join(clean_parts),
-                location=matched_loc,
-                source="Kariyer.net"
+            # 2. Katı Beyaz Liste (Strict Whitelist) ve Blacklist Doğrulaması
+            is_valid, matched_or_reason = validate_strict_location(
+                raw_location=real_loc,
+                title=real_title,
+                company=real_company
             )
 
-            # Skor 0 ise (alakasız sektör, kıdemli veya staj dışı) ekleme
+            # Eşleşmeyen veya 'Türkiye Geneli' / YEDAŞ / Adana gibi ilanları DİREKT ATLA (continue)
+            if not is_valid:
+                continue
+
+            # 3. Uygunluk skoru hesapla
+            score = calculate_relevance_score(
+                title=real_title,
+                text=real_desc,
+                location=real_loc,
+                source="Kariyer.net",
+                company=real_company
+            )
+
             if score <= 0:
                 continue
 
+            clean_loc_name = f"Tekirdağ / {matched_or_reason.capitalize()}" if matched_or_reason != "tekirdag" else "Tekirdağ"
+
             results.append({
-                "company": company,
-                "title": title,
-                "location": f"Tekirdağ / {matched_loc}" if matched_loc != "Tekirdağ" else "Tekirdağ",
+                "company": real_company,
+                "title": real_title,
+                "location": clean_loc_name,
                 "url": full_url,
                 "source": "Kariyer.net",
                 "relevance_score": score,
-                "notes": f"Kariyer.net ilanı - {company} ({matched_loc})",
+                "notes": f"Kariyer.net ilanı - {real_company} ({clean_loc_name})",
             })
     except Exception as e:
+        print(f"[UYARI] Kariyer.net arama hatası ({query} - {location_slug}): {e}")
+
+    return results
         print(f"[UYARI] Kariyer.net arama hatası ({query} - {location_slug}): {e}")
 
     return results
@@ -207,28 +226,18 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
                 continue
             seen_urls.add(href)
 
-            loc_check = f"{title} {company} {job_loc}".lower()
+            # Gerçek DOM verisini Katı Beyaz Liste (Strict Whitelist) ve Blacklist ile doğrula
+            is_valid, matched_or_reason = validate_strict_location(
+                raw_location=job_loc,
+                title=title,
+                company=company
+            )
 
-            # 1. Uzak şehir filtresi
-            if any(wc in loc_check for wc in WRONG_CITIES):
-                if not any(loc.lower() in loc_check for loc in LOCATIONS):
-                    continue
-
-            # 2. Kesin Lokasyon Doğrulaması (Esenyurt, İstanbul vb. elenir)
-            matched_loc = None
-            for loc in LOCATIONS:
-                if loc.lower() in loc_check:
-                    matched_loc = loc
-                    break
-
-            if not matched_loc:
+            # Türkiye Geneli, YEDAŞ, Adana veya Tekirdağ dışı ilçeler DİREKT ATLANIR (continue)
+            if not is_valid:
                 continue
 
-            # 3. Kıdemli pozisyonları ve bilinen alakasız firmaları ele
-            company_lower = company.lower()
-            if any(bad in company_lower for bad in ["dh teknik", "şara", "sara", "akbaş", "green diamond", "remax"]):
-                continue
-
+            # Kıdemli pozisyonları ve bilinen alakasız firmaları ele
             if any(s in title.lower() for s in ["şantiye", "müdür", "yönetici", "kıdemli", "senior", "direktör", "gayrimenkul"]):
                 continue
 
@@ -236,7 +245,8 @@ def _fetch_linkedin_jobs(query: str, location: str = "Tekirdağ") -> List[Dict[s
                 title=title,
                 text=company,
                 location=job_loc,
-                source="LinkedIn"
+                source="LinkedIn",
+                company=company
             )
 
             if score <= 0:

@@ -19,6 +19,7 @@ from config import (
     USER_AGENT,
     REQUEST_TIMEOUT,
     calculate_relevance_score,
+    validate_strict_location,
 )
 
 
@@ -153,20 +154,31 @@ def scrape_search_results_http(query: str) -> List[Dict[str, Any]]:
                     domain = url_tag.get_text(strip=True).split("/")[0]
                     company = domain
 
-                detected_location = "Tekirdağ Bölgesi"
-                for loc in LOCATIONS:
-                    if loc.lower() in combined_text:
-                        detected_location = loc
-                        break
+                # Katı Beyaz Liste (Strict Whitelist) ve Blacklist Doğrulaması
+                # Asla 'Tekirdağ Bölgesi' tahmini yapılmaz; doğrudan metindeki gerçek lokasyon doğrulanır.
+                is_valid, matched_or_reason = validate_strict_location(
+                    raw_location=f"{title} {snippet}",
+                    title=title,
+                    company=company
+                )
+                if not is_valid:
+                    continue
 
-                score = calculate_relevance_score(title, snippet, detected_location)
+                real_loc_name = f"Tekirdağ / {matched_or_reason.capitalize()}" if matched_or_reason != "tekirdag" else "Tekirdağ"
+                score = calculate_relevance_score(
+                    title=title,
+                    text=snippet,
+                    location=real_loc_name,
+                    source="Web / İş Arama",
+                    company=company
+                )
 
-                if score >= 20:
+                if score >= 30:
                     results.append(
                         {
                             "company": company,
                             "title": title,
-                            "location": detected_location,
+                            "location": real_loc_name,
                             "url": parsed_link,
                             "source": "Web / İş Arama",
                             "relevance_score": score,
@@ -209,13 +221,31 @@ def scrape_with_playwright(query: str) -> List[Dict[str, Any]]:
                 if title_el:
                     title = title_el.get_text(strip=True)
                     company = comp_el.get_text(strip=True) if comp_el else "Bilinmeyen Firma"
-                    location = loc_el.get_text(strip=True) if loc_el else "Tekirdağ / Çorlu"
+                    if not loc_el:
+                        continue
+                    location = loc_el.get_text(strip=True)
+                    
+                    # Katı Beyaz Liste ve Blacklist Doğrulaması
+                    is_valid, matched_or_reason = validate_strict_location(
+                        raw_location=location,
+                        title=title,
+                        company=company
+                    )
+                    if not is_valid:
+                        continue
+
                     href = link_el.get("href", "") if link_el else ""
                     link = f"https://tr.indeed.com{href}" if href.startswith("/") else (href or indeed_url)
                     snippet = snip_el.get_text(strip=True) if snip_el else ""
 
-                    score = calculate_relevance_score(title, snippet, location)
-                    if score >= 20 and link:
+                    score = calculate_relevance_score(
+                        title=title,
+                        text=snippet,
+                        location=location,
+                        source="Indeed / Canlı İlan",
+                        company=company
+                    )
+                    if score >= 30 and link:
                         results.append(
                             {
                                 "company": company,

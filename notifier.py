@@ -63,6 +63,19 @@ class TelegramNotifier:
         score = lead.get("relevance_score", 0)
         url = lead.get("url", "#")
         notes = lead.get("notes", "")
+        source = lead.get("source", "")
+
+        # Katı Beyaz Liste Güvenlik Duvarı: Telegram'a gitmeden önce son onay
+        if "OSB Rehberi" not in source:
+            from config import validate_strict_location
+            is_valid, reason = validate_strict_location(
+                raw_location=location,
+                title=title,
+                company=company
+            )
+            if not is_valid:
+                print(f"[ENGEL] Telegram bildirimi iptal edildi ({company} - {reason})")
+                return False
 
         # Eğer Telegram yapılandırılmamışsa terminalde şık formatta yazdır (Dry-run)
         if not self.is_configured():

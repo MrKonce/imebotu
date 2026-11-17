@@ -54,7 +54,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
         body = (
             f"TNKU IME ve Staj Telegram Robotu 7/24 Calisiyor!\n"
-            f"Surum: v2.1-strict-tekirdag-only\n"
+            f"Surum: v3.0-dom-strict-whitelist\n"
             f"Toplam Aktif Yerel Firsat: {total}\n"
             f"1 Numarali Ilan: {top_info}\n"
         )

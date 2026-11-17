@@ -116,13 +116,65 @@ NEGATIVE_KEYWORDS = [
     "doktor", "sağlık personeli", "çocuk gelişim", "öğretmen", "parfüm", "gıda stajyeri"
 ]
 
-# 2. Kesinlikle Elenecek Tekirdağ Dışı Şehirler
+# 2. Katı Beyaz Liste (Strict Whitelist) - Sadece Tekirdağ ve İlçeleri
+STRICT_LOCATIONS_WHITELIST = [
+    "tekirdağ", "tekirdag",
+    "çorlu", "corlu",
+    "çerkezköy", "cerkezkoy",
+    "ergene",
+    "kapaklı", "kapakli",
+    "süleymanpaşa", "suleymanpasa",
+    "marmaraereğlisi", "marmaraereglisi",
+    "muratlı", "muratli",
+    "velimeşe", "velimese",
+    "hayrabolu",
+    "saray",
+    "şarköy", "sarkoy",
+]
+
+# Çoklu / Sahte Şehir ve Türkiye Geneli Kara Listesi
+MULTI_CITY_BLACKLIST = [
+    "türkiye geneli", "turkiye geneli",
+    "tüm şehirler", "tum sehirler",
+    "tüm iller", "tum iller",
+    "81 il", "tum turkiye", "tüm türkiye",
+    "tümü", "tumu",
+    "il daha",
+]
+
+# Tekirdağ / Trakya Bölgesi Dışındaki Elektrik Dağıtım / Alakasız Bölgesel Şirketler (Kesin Reddet)
+WRONG_REGIONAL_FIRMS = [
+    "yedaş", "yedas",  # Karadeniz (Samsun, Ordu, Çorum, Sinop, Amasya)
+    "toroslar",        # Güney (Adana, Mersin, Hatay, Gaziantep, Osmaniye, Kilis)
+    "ayedaş", "ayedas", "bedaş", "bedas",
+    "başkent edaş", "baskent edas", "başkent elektrik", "baskent elektrik",
+    "gdz", "gediz", "aydem", "adm elektrik",
+    "dicle edaş", "dicle edas", "dicle elektrik",
+    "çoruh edaş", "coruh edas", "çoruh elektrik", "coruh elektrik",
+    "aras edaş", "aras edas", "aras elektrik",
+    "fırat edaş", "firat edas", "fırat elektrik", "firat elektrik",
+    "osmangazi edaş", "oedaş", "oedas",
+    "uludağ edaş", "uedaş", "uedas",
+    "çamlıbel edaş", "cedaş", "cedas",
+    "akdeniz edaş", "akdeniz elektrik",
+    "meram edaş", "meram edas", "meram elektrik",
+    "dh teknik", "şara enerji", "sara enerji", "akbaş enerji", "green diamond", "remax"
+]
+
+# 80 Tekirdağ Dışı İl (Tekirdağ harici kesin eleme listesi)
 WRONG_CITIES = [
-    "gaziantep", "samsun", "izmir", "ankara", "kocaeli", "bursa", "adana",
-    "konya", "antalya", "eskişehir", "trabzon", "diyarbakır", "kayseri",
-    "mersin", "denizli", "sakarya", "manisa", "balıkesir", "aydın", "muğla",
-    "hatay", "çorum", "sivas", "malatya", "şanlıurfa", "kahramanmaraş", "van",
-    "istanbul"
+    "adana", "adıyaman", "afyon", "afyonkarahisar", "ağrı", "aksaray", "amasya",
+    "ankara", "antalya", "ardahan", "artvin", "aydın", "balıkesir", "bartın",
+    "batman", "bayburt", "bilecik", "bingöl", "bitlis", "bolu", "burdur",
+    "bursa", "çanakkale", "çankırı", "çorum", "denizli", "diyarbakır", "düzce",
+    "elazığ", "erzincan", "erzurum", "eskişehir", "gaziantep", "giresun",
+    "gümüşhane", "hakkari", "hatay", "iğdır", "isparta", "izmir",
+    "kahramanmaraş", "karabük", "karaman", "kars", "kastamonu", "kayseri",
+    "kırıkkale", "kırklareli", "kırşehir", "kilis", "kocaeli", "konya",
+    "kütahya", "malatya", "manisa", "mardin", "mersin", "muğla", "muş",
+    "nevşehir", "niğde", "ordu", "osmaniye", "rize", "sakarya", "samsun",
+    "siirt", "sinop", "sivas", "şanlıurfa", "şırnak", "tokat", "trabzon",
+    "tunceli", "uşak", "van", "yalova", "yozgat", "zonguldak"
 ]
 
 
@@ -131,13 +183,12 @@ def normalize_tr(text: str) -> str:
     if not text:
         return ""
     mapping = {
-        "İ": "i",
-        "I": "ı",
-        "Ş": "ş",
-        "Ğ": "ğ",
-        "Ü": "ü",
-        "Ö": "ö",
-        "Ç": "ç",
+        "İ": "i", "I": "ı", "ı": "i",
+        "Ş": "ş", "ş": "s",
+        "Ğ": "ğ", "ğ": "g",
+        "Ü": "ü", "ü": "u",
+        "Ö": "ö", "ö": "o",
+        "Ç": "ç", "ç": "c",
     }
     res = text
     for upper, lower in mapping.items():
@@ -145,20 +196,85 @@ def normalize_tr(text: str) -> str:
     return res.lower()
 
 
+def validate_strict_location(raw_location: str, title: str = "", company: str = "") -> tuple[bool, str]:
+    """
+    Kullanıcının talimatlarına göre Katı Beyaz Liste (Strict Whitelist) ve Kara Liste Doğrulayıcı:
+    1. DOM/API'den gelen asıl lokasyon string'inde whitelist kelimesi zorunludur:
+       ['tekirdağ', 'çorlu', 'çerkezköy', 'ergene', 'kapaklı', 'süleymanpaşa', 'marmaraereğlisi', ...]
+    2. 'Türkiye Geneli', 'Tüm Şehirler', '+... il daha' veya 3'ten fazla il içeren çoklu ilanlar ELENİR.
+    3. Başlıkta veya şirket isminde Adana, Samsun, YEDAŞ vb. bölgesel firmalar ELENİR.
+    """
+    loc_norm = normalize_tr(raw_location)
+    title_norm = normalize_tr(title)
+    comp_norm = normalize_tr(company)
+
+    # 1. Başlık ve Şirket Adı Kontrolü (YEDAŞ, Toroslar, Adana, Samsun vb. doğrudan red)
+    for firm in WRONG_REGIONAL_FIRMS:
+        firm_norm = normalize_tr(firm)
+        if firm_norm in title_norm or firm_norm in comp_norm or firm_norm in loc_norm:
+            return False, f"Alakasız Bölgesel Firma/Başlık ({firm})"
+
+    for wc in WRONG_CITIES:
+        wc_norm = normalize_tr(wc)
+        pattern = r"\b" + re.escape(wc_norm) + r"\b"
+        if re.search(pattern, title_norm) or re.search(pattern, comp_norm):
+            return False, f"Başlık veya Şirkette Tekirdağ Dışı Şehir ({wc})"
+
+    # 2. Lokasyonda Türkiye Geneli / Tüm Şehirler / +... il daha kontrolü
+    for bl in MULTI_CITY_BLACKLIST:
+        bl_norm = normalize_tr(bl)
+        if bl_norm in loc_norm:
+            return False, f"Genel / Çoklu Şehir İlanı ({bl})"
+
+    if re.search(r"\+\d+\s*il", loc_norm):
+        return False, "Çoklu Şehir İlanı (+il)"
+
+    # Çoklu şehir listesi kontrolü (Örn: Adana, Adıyaman, ... Tekirdağ)
+    if loc_norm.count(",") > 3 or len(loc_norm) > 90:
+        return False, "81 Şehir Yayını (Aşırı uzun lokasyon)"
+
+    # 3. Katı Beyaz Liste (Strict Whitelist) Kontrolü
+    matched_loc = None
+    for white in STRICT_LOCATIONS_WHITELIST:
+        white_norm = normalize_tr(white)
+        pattern = r"\b" + re.escape(white_norm) + r"\b"
+        if re.search(pattern, loc_norm):
+            matched_loc = white
+            break
+
+    if not matched_loc:
+        return False, "Beyaz Listede Yok (Tekirdağ/Çorlu/Çerkezköy içermiyor)"
+
+    # 4. Lokasyonda Tekirdağ harici başka bir il adı geçiyor mu? (Örn: 'Adana, Tekirdağ')
+    for wc in WRONG_CITIES:
+        wc_norm = normalize_tr(wc)
+        pattern = r"\b" + re.escape(wc_norm) + r"\b"
+        if re.search(pattern, loc_norm):
+            return False, f"Lokasyonda Tekirdağ Dışı İl Var ({wc})"
+
+    return True, matched_loc
+
+
 def calculate_relevance_score(
     title: str,
     text: str = "",
     location: str = "",
     source: str = "",
-    created_at: str = None
+    created_at: str = None,
+    company: str = ""
 ) -> int:
     """
     TNKÜ E-E 4. sınıf İME öğrencisi için sert ve tavizsiz puanlama motoru:
-    1. Lokasyon: SADECE Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe havzası.
-       Başka şehir ise veya doğrulanmamışsa PUAN = 0 (ELENİR).
+    1. Katı Lokasyon Doğrulaması: validate_strict_location geçemeyen ilanların SKORU 0'DIR.
     2. Kıdem/Rol: Şantiye şefi, yönetici, kıdemli ise PUAN = 0 (ELENİR).
     3. Rol Uyumu: İME, Staj, Aday Mühendis, Öğrenci pozisyonları zirveye taşınır.
     """
+    # OSB Rehberi fabrikaları zaten yerel üretim tesisleridir
+    if "OSB Rehberi" not in source:
+        is_valid_loc, _ = validate_strict_location(raw_location=location, title=title, company=company)
+        if not is_valid_loc:
+            return 0
+
     title_norm = normalize_tr(title)
     text_norm = normalize_tr(text)
     loc_norm = normalize_tr(location)
