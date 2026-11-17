@@ -122,53 +122,92 @@ DEAD_PHRASES = [
 ]
 
 
-def is_link_alive(url: str, timeout: int = 5) -> tuple[bool, str]:
+COMPANY_NOISE = {
+    "san.", "sanayi", "tic.", "ticaret", "a.ş.", "a.s.", "ltd.", "şti.", "sti.",
+    "holding", "grubu", "grup", "gıda", "gida", "tekstil", "tesisleri", "tesisi",
+    "anonim", "şirketi", "sirketi", "endüstri", "endustri", "üretim", "uretim", "türkiye", "turkiye"
+}
+
+TITLE_NOISE = {
+    "ve", "ile", "için", "icin", "uzun", "dönem", "donem", "yeni", "elemanı", "elemani",
+    "personeli", "aday", "tam", "zamanlı", "zamanli", "part", "time", "uzmanı", "uzmani", "aranıyor", "araniyor"
+}
+
+
+def clean_tokens_for_check(text: str, noise_set: set) -> List[str]:
+    cleaned = re.sub(r"[^\w\s]", " ", (text or "").lower(), flags=re.UNICODE)
+    return [t.strip() for t in cleaned.split() if len(t.strip()) >= 3 and t.strip() not in noise_set]
+
+
+def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", timeout: int = 7) -> tuple[bool, str]:
     """
-    Kullanıcının 4. Kuralı: Ölü Link (Dead Link) ve Sayfa Geçerlilik Kontrolü.
-    HTTP GET isteği atar:
-    1. HTTP yanıt kodu >= 400 (404, 500, 403 vb.) ise -> ÖLÜ
-    2. Sayfa içeriğinde 'İlan yayından kaldırılmıştır' vb. ibareler varsa -> ÖLÜ
-    3. Sadece 200 OK ve aktif içeriği olan linkler -> GEÇERLİ
+    Kullanıcının 2. Kuralı: Agresif Ölü ve Sahte Link Kontrolü (Bel Karper / Zorluteks Sorunu)
+    Sadece HTTP 200 dönmesi yetmez:
+    1. HTTP yanıt kodu 200 OK olmalıdır (404, 500, 403 vb. doğrudan ELENİR).
+    2. Sitenin ana sayfasına veya login sayfasına yönlendirilen (redirect) linkler ELENİR.
+    3. Sayfa içeriğinde ölü ilan ibareleri ('ilan yayından kaldırılmıştır' vb.) varsa ELENİR.
+    4. Sayfa DOM ağacında şirket adı veya ilan başlığı anahtar kelimeleri yoksa (HAYALET İLAN) ELENİR.
     """
-    clean_url = url.strip()
+    clean_url = (url or "").strip()
     if not clean_url or not clean_url.startswith("http"):
         return False, "Geçersiz URL formatı"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
 
     try:
         resp = requests.get(
             clean_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-            },
+            headers=headers,
             timeout=timeout,
             verify=False,
             allow_redirects=True,
-            stream=True
+            stream=False
         )
-        if resp.status_code >= 400:
+        if resp.status_code != 200:
             return False, f"HTTP {resp.status_code}"
 
-        chunk = b""
-        for c in resp.iter_content(chunk_size=8192):
-            chunk += c
-            if len(chunk) >= 8192:
-                break
-        text = chunk.decode("utf-8", errors="ignore").lower()
+        final_parsed = urllib.parse.urlparse(resp.url)
+        path = final_parsed.path.rstrip("/")
+        if path in ["", "/tr", "/en", "/anasayfa", "/index.html", "/index.php", "/home", "/login", "/giris", "/tr/youth/login"]:
+            return False, f"Ana sayfaya / login sayfasına yönlendirildi ({resp.url})"
+
+        html_text = resp.text.lower()
+
+        # Ölü ilan ibareleri kontrolü
         for phrase in DEAD_PHRASES:
-            if phrase in text:
+            if phrase in html_text:
                 return False, f"İlan yayından kaldırılmış ({phrase})"
 
-        return True, "200 OK"
+        # DOM kontrolü: Şirket Adı
+        if company:
+            comp_tokens = clean_tokens_for_check(company, COMPANY_NOISE)
+            if comp_tokens and not any(t in html_text for t in comp_tokens):
+                return False, f"Şirket ('{company}') DOM ağacında bulunamadı (Hayalet İlan)"
+
+        # DOM kontrolü: İlan Başlığı
+        if title:
+            title_tokens = clean_tokens_for_check(title, TITLE_NOISE)
+            if title_tokens and not any(t in html_text for t in title_tokens):
+                return False, f"İlan başlığı ('{title}') DOM ağacında bulunamadı (Hayalet İlan)"
+
+        return True, "200 OK & Doğrulandı"
+
+    except requests.exceptions.Timeout:
+        return False, "Bağlantı zaman aşımı (Timeout)"
+    except requests.exceptions.SSLError as e:
+        return False, f"SSL Hatası ({type(e).__name__})"
     except Exception as e:
-        return False, f"Ağ Hatası: {type(e).__name__}"
+        return False, f"Ağ Hatası ({type(e).__name__})"
 
 
 def filter_alive_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Listelenecek veya gönderilecek ilanların linklerini paralel olarak doğrular.
-    Ölü linkler veritabanından anında deaktif edilir ve elenir.
+    Listelenecek veya gönderilecek ilanların linklerini agresif olarak DOM seviyesinde doğrular.
+    Ölü, redirect olan veya sahte/hayalet ilanlar anında elenir ve veritabanından deaktif edilir.
     """
     import concurrent.futures
 
@@ -177,7 +216,9 @@ def filter_alive_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     def check_item(lead):
         url = lead.get("url", "")
-        alive, reason = is_link_alive(url)
+        company = lead.get("company", "")
+        title = lead.get("title", "")
+        alive, reason = verify_ad_alive_and_genuine(url, company, title)
         return lead, alive, reason
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -188,7 +229,7 @@ def filter_alive_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 alive_leads.append(lead)
             else:
                 dead_urls.append((lead.get("url", ""), reason))
-                print(f"[ÖLÜ LİNK ELENDİ] {lead.get('company')} -> {reason}")
+                print(f"[ÖLÜ / SAHTE İLAN ELENDİ] {lead.get('company')} ({lead.get('title')}) -> {reason}")
 
     # Veritabanında ölü linkleri deaktif et
     for dead_url, _ in dead_urls:
@@ -229,16 +270,24 @@ def background_scanner_worker(notifier: TelegramNotifier, interval_hours: int = 
             database.init_db()
 
             collected = []
-            collected.extend(fetch_all_active_jobs(max_queries=3, use_playwright=False))
             collected.extend(fetch_all_portal_jobs())
 
             new_count = 0
             for job in collected:
+                url = job.get("url", "").strip()
+                if not url:
+                    continue
+
+                # 2. Kural: Agresif Ölü / Sahte Link Doğrulaması
+                alive, _ = verify_ad_alive_and_genuine(url, job.get("company", ""), job.get("title", ""))
+                if not alive:
+                    continue
+
                 is_new, _ = database.upsert_lead(
                     company=job["company"],
                     title=job["title"],
                     location=job.get("location", "Tekirdağ"),
-                    url=job["url"],
+                    url=url,
                     source=job.get("source", "Web"),
                     status="Yeni",
                     notes=job.get("notes") or job.get("snippet", ""),
@@ -445,14 +494,12 @@ class TelegramBotListener:
         """
         self.send_message(
             "🔍 <b>Canlı tarama başlatıldı...</b>\n"
-            "Kariyer.net, LinkedIn ve Trakya OSB portalları taranıyor. Lütfen bekleyin..."
+            "Youthall, Kariyer.net ve LinkedIn portalları taranıyor. Lütfen bekleyin..."
         )
         database.init_db()
 
         try:
             collected = []
-            collected.extend(convert_osb_to_leads())
-            collected.extend(fetch_all_active_jobs(max_queries=4, use_playwright=False))
             collected.extend(fetch_all_portal_jobs())
 
             brand_new_leads = []
@@ -466,9 +513,14 @@ class TelegramBotListener:
                 if database.lead_exists(url):
                     continue
 
-                # 4. Kural: Ölü link ve sayfa geçerlilik kontrolü
-                alive, _ = is_link_alive(url)
+                # 2. ve 4. Kural: Agresif ölü link, redirect ve DOM kontrolü
+                alive, reason = verify_ad_alive_and_genuine(
+                    url=url,
+                    company=lead.get("company", ""),
+                    title=lead.get("title", "")
+                )
                 if not alive:
+                    print(f"[TARAMA ATLANDI] {lead.get('company')} ({lead.get('title')}) -> {reason}")
                     continue
 
                 # Yeni ilanı veritabanına ekle
@@ -541,10 +593,11 @@ class TelegramBotListener:
             self.handle_scan()
         elif clean_text in ["/durum", "/rapor", "durum", "rapor", "/stats", "istatistik", "/menu", "/panel", "/start", "/help", "menu", "panel", "yardım"]:
             self.handle_status()
-        elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu"]:
+        elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu", "/flush", "flush"]:
             purged = database.purge_invalid_leads()
             self.send_message(
                 f"🧹 <b>Veritabanı Sıfırlandı ve Temizlendi!</b>\n"
+                f"Alakasız şehirler, kırık linkler ve hayalet ilanlar temizlendi.\n"
                 f"Temizlenen geçersiz kayıt: {purged}\n\n"
                 f"Listeyi görmek için <b>İlk 20</b> veya <b>Tüm İlanlar</b> butonuna basabilirsiniz.",
                 reply_markup=get_control_panel_keyboard()

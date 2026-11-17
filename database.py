@@ -54,8 +54,8 @@ def rescore_all_leads(db_path: str = DB_PATH) -> int:
 def purge_invalid_leads(db_path: str = DB_PATH) -> int:
     """
     Veritabanındaki alakasız şehirleri (İzmir, Ankara, Gaziantep, Adana, Samsun vb.),
-    kıdemli / şantiye pozisyonlarını, YEDAŞ gibi bölgesel firmaları ve
-    Türkiye Geneli gibi çoklu şehir ilanlarını tamamen temizler.
+    kıdemli / şantiye pozisyonlarını, YEDAŞ gibi bölgesel firmaları,
+    Türkiye Geneli gibi çoklu şehir ilanlarını ve sahte/ölü OSB Rehberi kalıntılarını tamamen temizler.
     Sadece Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe / Muratlı sanayi havzasına ait
     öğrenci ve İME stajyer fırsatlarını bırakır.
     """
@@ -65,71 +65,85 @@ def purge_invalid_leads(db_path: str = DB_PATH) -> int:
         cursor.execute(
             """
             DELETE FROM leads
-            WHERE source NOT LIKE 'OSB Rehberi%'
-              AND (
-                  is_active = 0
-                  OR relevance_score < 30
-                  OR LOWER(title) LIKE '%şantiye%'
-                  OR LOWER(title) LIKE '%müdür%'
-                  OR LOWER(title) LIKE '%kıdemli%'
-                  OR LOWER(title) LIKE '%senior%'
-                  OR LOWER(title) LIKE '%gayrimenkul%'
-                  OR LOWER(title) LIKE '%adana%'
-                  OR LOWER(title) LIKE '%samsun%'
-                  OR LOWER(company) LIKE '%dh teknik%'
-                  OR LOWER(company) LIKE '%şara%'
-                  OR LOWER(company) LIKE '%sara%'
-                  OR LOWER(company) LIKE '%akbaş%'
-                  OR LOWER(company) LIKE '%green diamond%'
-                  OR LOWER(company) LIKE '%remax%'
-                  OR LOWER(company) LIKE '%aselsan gaziantep%'
-                  OR LOWER(company) LIKE '%yeda%'
-                  OR LOWER(company) LIKE '%toroslar%'
-                  OR LOWER(company) LIKE '%başkent eda%'
-                  OR LOWER(company) LIKE '%baskent eda%'
-                  OR LOWER(company) LIKE '%gdz%'
-                  OR LOWER(company) LIKE '%aydem%'
-                  OR LOWER(company) LIKE '%dicle eda%'
-                  OR LOWER(company) LIKE '%çoruh eda%'
-                  OR LOWER(company) LIKE '%coruh eda%'
-                  OR LOWER(location) LIKE '%türkiye geneli%'
-                  OR LOWER(location) LIKE '%turkiye geneli%'
-                  OR LOWER(location) LIKE '%tüm şehirler%'
-                  OR LOWER(location) LIKE '%tum sehirler%'
-                  OR LOWER(location) LIKE '%tümü%'
-                  OR LOWER(location) LIKE '%tumu%'
-                  OR (
-                      LOWER(location) NOT LIKE '%tekirdağ%'
-                      AND LOWER(location) NOT LIKE '%tekirdag%'
-                      AND LOWER(location) NOT LIKE '%çorlu%'
-                      AND LOWER(location) NOT LIKE '%corlu%'
-                      AND LOWER(location) NOT LIKE '%çerkezköy%'
-                      AND LOWER(location) NOT LIKE '%cerkezkoy%'
-                      AND LOWER(location) NOT LIKE '%ergene%'
-                      AND LOWER(location) NOT LIKE '%velimeşe%'
-                      AND LOWER(location) NOT LIKE '%velimese%'
-                      AND LOWER(location) NOT LIKE '%muratlı%'
-                      AND LOWER(location) NOT LIKE '%muratli%'
-                      AND LOWER(location) NOT LIKE '%kapaklı%'
-                      AND LOWER(location) NOT LIKE '%kapakli%'
-                      AND LOWER(location) NOT LIKE '%süleymanpaşa%'
-                      AND LOWER(location) NOT LIKE '%suleymanpasa%'
-                  )
-                  OR LOWER(location) LIKE '%adana%'
-                  OR LOWER(location) LIKE '%samsun%'
-                  OR LOWER(location) LIKE '%izmir%'
-                  OR LOWER(location) LIKE '%ankara%'
-                  OR LOWER(location) LIKE '%gaziantep%'
-                  OR LOWER(location) LIKE '%esenyurt%'
-                  OR LOWER(location) LIKE '%bursa%'
-                  OR LOWER(location) LIKE '%antalya%'
-                  OR LOWER(location) LIKE '%trabzon%'
-              )
+            WHERE source LIKE 'OSB Rehberi%'
+               OR is_active = 0
+               OR relevance_score < 30
+               OR LOWER(title) LIKE '%şantiye%'
+               OR LOWER(title) LIKE '%müdür%'
+               OR LOWER(title) LIKE '%kıdemli%'
+               OR LOWER(title) LIKE '%senior%'
+               OR LOWER(title) LIKE '%gayrimenkul%'
+               OR LOWER(title) LIKE '%adana%'
+               OR LOWER(title) LIKE '%samsun%'
+               OR LOWER(company) LIKE '%dh teknik%'
+               OR LOWER(company) LIKE '%şara%'
+               OR LOWER(company) LIKE '%sara%'
+               OR LOWER(company) LIKE '%akbaş%'
+               OR LOWER(company) LIKE '%green diamond%'
+               OR LOWER(company) LIKE '%remax%'
+               OR LOWER(company) LIKE '%aselsan gaziantep%'
+               OR LOWER(company) LIKE '%yeda%'
+               OR LOWER(company) LIKE '%yeşilırmak%'
+               OR LOWER(company) LIKE '%yesilirmak%'
+               OR LOWER(company) LIKE '%toroslar%'
+               OR LOWER(company) LIKE '%başkent eda%'
+               OR LOWER(company) LIKE '%baskent eda%'
+               OR LOWER(company) LIKE '%gdz%'
+               OR LOWER(company) LIKE '%aydem%'
+               OR LOWER(company) LIKE '%dicle eda%'
+               OR LOWER(company) LIKE '%çoruh eda%'
+               OR LOWER(company) LIKE '%coruh eda%'
+               OR LOWER(company) LIKE '%şenpiliç%'
+               OR LOWER(company) LIKE '%senpilic%'
+               OR LOWER(company) LIKE '%bel karper%'
+               OR LOWER(company) LIKE '%zorluteks%'
+               OR LOWER(location) LIKE '%türkiye geneli%'
+               OR LOWER(location) LIKE '%turkiye geneli%'
+               OR LOWER(location) LIKE '%tüm şehirler%'
+               OR LOWER(location) LIKE '%tum sehirler%'
+               OR LOWER(location) LIKE '%tümü%'
+               OR LOWER(location) LIKE '%tumu%'
+               OR (
+                   LOWER(location) NOT LIKE '%tekirdağ%'
+                   AND LOWER(location) NOT LIKE '%tekirdag%'
+                   AND LOWER(location) NOT LIKE '%çorlu%'
+                   AND LOWER(location) NOT LIKE '%corlu%'
+                   AND LOWER(location) NOT LIKE '%çerkezköy%'
+                   AND LOWER(location) NOT LIKE '%cerkezkoy%'
+                   AND LOWER(location) NOT LIKE '%ergene%'
+                   AND LOWER(location) NOT LIKE '%velimeşe%'
+                   AND LOWER(location) NOT LIKE '%velimese%'
+                   AND LOWER(location) NOT LIKE '%muratlı%'
+                   AND LOWER(location) NOT LIKE '%muratli%'
+                   AND LOWER(location) NOT LIKE '%kapaklı%'
+                   AND LOWER(location) NOT LIKE '%kapakli%'
+                   AND LOWER(location) NOT LIKE '%süleymanpaşa%'
+                   AND LOWER(location) NOT LIKE '%suleymanpasa%'
+               )
+               OR LOWER(location) LIKE '%adana%'
+               OR LOWER(location) LIKE '%samsun%'
+               OR LOWER(location) LIKE '%izmir%'
+               OR LOWER(location) LIKE '%ankara%'
+               OR LOWER(location) LIKE '%gaziantep%'
+               OR LOWER(location) LIKE '%esenyurt%'
+               OR LOWER(location) LIKE '%bursa%'
+               OR LOWER(location) LIKE '%antalya%'
+               OR LOWER(location) LIKE '%trabzon%'
             """
         )
         purged = cursor.rowcount
         conn.commit()
     return purged
+
+
+def flush_all_leads(db_path: str = DB_PATH) -> int:
+    """Kullanıcının 4. Kuralı gereği veritabanındaki tüm eski/hatalı kayıtları sıfırlar (Tam Flush)."""
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM leads")
+        count = cursor.rowcount
+        conn.commit()
+    return count
 
 
 def init_db(db_path: str = DB_PATH) -> None:
@@ -479,9 +493,15 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
               AND LOWER(company) NOT LIKE '%green diamond%'
               AND LOWER(company) NOT LIKE '%remax%'
               AND LOWER(company) NOT LIKE '%yeda%'
+              AND LOWER(company) NOT LIKE '%yeşilırmak%'
+              AND LOWER(company) NOT LIKE '%yesilirmak%'
               AND LOWER(company) NOT LIKE '%toroslar%'
               AND LOWER(company) NOT LIKE '%başkent eda%'
               AND LOWER(company) NOT LIKE '%baskent eda%'
+              AND LOWER(company) NOT LIKE '%şenpiliç%'
+              AND LOWER(company) NOT LIKE '%senpilic%'
+              AND LOWER(company) NOT LIKE '%bel karper%'
+              AND LOWER(company) NOT LIKE '%zorluteks%'
               AND LOWER(title) NOT LIKE '%şantiye%'
               AND LOWER(title) NOT LIKE '%müdür%'
               AND LOWER(title) NOT LIKE '%kıdemli%'
@@ -505,8 +525,8 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
                   OR LOWER(location) LIKE '%kapakli%'
                   OR LOWER(location) LIKE '%süleymanpaşa%'
                   OR LOWER(location) LIKE '%suleymanpasa%'
-                  OR source LIKE 'OSB Rehberi%'
               )
+              AND source NOT LIKE 'OSB Rehberi%'
               AND LOWER(location) NOT LIKE '%izmir%'
               AND LOWER(location) NOT LIKE '%ankara%'
               AND LOWER(location) NOT LIKE '%gaziantep%'

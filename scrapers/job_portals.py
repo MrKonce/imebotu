@@ -25,6 +25,7 @@ from config import (
     calculate_relevance_score,
     validate_strict_location,
 )
+from scrapers.youthall import fetch_youthall_jobs
 
 MOBILE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
@@ -105,9 +106,15 @@ def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> Lis
             except Exception:
                 pass
 
-            # Eğer detay sayfası engellendiyse liste kartındaki metni al
+            # 3. Kural: SADECE sitenin belirlediği Ana Lokasyon HTML etiketini kontrol et!
+            # Lokasyon DOM etiketi yoksa asla genel açıklama (description/clean_parts) metninden tahmin yapma!
             if not real_loc:
-                real_loc = " ".join(clean_parts)
+                card_loc_el = a.select_one(".location, [class*='location'], [data-test*='location']")
+                if card_loc_el:
+                    real_loc = card_loc_el.get_text(" ", strip=True)
+                else:
+                    # Lokasyon etiketi yoksa ilanı doğrudan atla (keyword spam önleme)
+                    continue
 
             # 2. Katı Beyaz Liste (Strict Whitelist) ve Blacklist Doğrulaması
             is_valid, matched_or_reason = validate_strict_location(
@@ -290,15 +297,26 @@ def fetch_linkedin_all() -> List[Dict[str, Any]]:
 # =============================================================================
 
 def fetch_all_portal_jobs() -> List[Dict[str, Any]]:
-    """Kariyer.net ve LinkedIn portallarından filtrelenmiş yerel staj/İME ilanlarını toplar."""
+    """Youthall, Kariyer.net ve LinkedIn portallarından filtrelenmiş yerel staj/İME ilanlarını toplar."""
     all_jobs: Dict[str, Dict[str, Any]] = {}
 
+    # 1. Youthall Portalı
+    print("[Youthall] Yerel staj ve genç yetenek ilanları taranıyor...")
+    for job in fetch_youthall_jobs():
+        if job["url"] not in all_jobs:
+            all_jobs[job["url"]] = job
+
+    # 2. Kariyer.net Portalı
+    print("[Kariyer.net] Yerel staj/İME ilanları taranıyor...")
     for job in fetch_kariyernet_all():
         if job["url"] not in all_jobs:
             all_jobs[job["url"]] = job
 
+    # 3. LinkedIn Portalı
+    print("[LinkedIn] Yerel staj/aday mühendis ilanları taranıyor...")
     for job in fetch_linkedin_all():
         if job["url"] not in all_jobs:
             all_jobs[job["url"]] = job
 
+    print(f"[Portallar] Toplam {len(all_jobs)} tekil doğrulanmış ilan toplandı.")
     return list(all_jobs.values())

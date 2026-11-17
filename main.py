@@ -24,11 +24,11 @@ from scrapers.active_jobs import fetch_all_active_jobs
 from scrapers.job_portals import fetch_all_portal_jobs
 
 
-def run_pipeline(sync_osb: bool = True, use_playwright: bool = False) -> None:
+def run_pipeline(sync_osb: bool = False, use_playwright: bool = False) -> None:
     """
     Ana tarama ve bildirim akışını yürütür:
     1. Veritabanını hazırla ve tabloları doğrula.
-    2. OSB kurumsal firma rehberini ve canlı web ilanlarını çek.
+    2. Canlı portal ilanlarını (Youthall, Kariyer.net, LinkedIn vb.) çek.
     3. Append / Update (Upsert) mantığıyla verileri kaydet / güncelle.
     4. Sadece YENİ ve yüksek uygunluklu ilanları Telegram üzerinden kullanıcıya bildir.
     """

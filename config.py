@@ -268,34 +268,23 @@ def calculate_relevance_score(
     1. Katı Lokasyon Doğrulaması: validate_strict_location geçemeyen ilanların SKORU 0'DIR.
     2. Kıdem/Rol: Şantiye şefi, yönetici, kıdemli ise PUAN = 0 (ELENİR).
     3. Rol Uyumu: İME, Staj, Aday Mühendis, Öğrenci pozisyonları zirveye taşınır.
+    4. Keyword Spam Engeli: Lokasyon ASLA genel açıklama (text) içinde aranmaz; sadece 'location' etiketi baz alınır.
     """
-    # OSB Rehberi fabrikaları zaten yerel üretim tesisleridir
-    if "OSB Rehberi" not in source:
-        is_valid_loc, _ = validate_strict_location(raw_location=location, title=title, company=company)
-        if not is_valid_loc:
-            return 0
+    # 1. Katı Lokasyon Doğrulaması (İstisnasız her kaynak için zorunlu)
+    is_valid_loc, _ = validate_strict_location(raw_location=location, title=title, company=company)
+    if not is_valid_loc:
+        return 0
 
     title_norm = normalize_tr(title)
     text_norm = normalize_tr(text)
     loc_norm = normalize_tr(location)
-    combined = f"{title_norm} {text_norm} {loc_norm}"
+    combined = f"{title_norm} {text_norm}"
 
-    # 1. Kıdemli veya alakasız meslekleri doğrudan ele
+    # 2. Kıdemli veya alakasız meslekleri doğrudan ele
     for neg in NEGATIVE_KEYWORDS:
         neg_norm = normalize_tr(neg)
         if neg_norm in title_norm or neg_norm in text_norm:
             return 0
-
-    # 2. Lokasyon Kontrolü: Kesinlikle Tekirdağ / Çorlu / Çerkezköy havzasında olmalı
-    if any(normalize_tr(wc) in combined for wc in WRONG_CITIES):
-        # Tekirdağ açıkça geçmiyorsa ele
-        if not any(normalize_tr(loc) in combined for loc in LOCATIONS):
-            return 0
-
-    # Hedef lokasyonlardan en az biri açıkça doğrulanmalı (OSB hedefleri zaten lokasyonludur)
-    is_valid_location = any(normalize_tr(loc) in combined for loc in LOCATIONS)
-    if not is_valid_location and "OSB Rehberi" not in source:
-        return 0
 
     # 3. Öğrenci / İME / Stajyer Format Kontrolü (HAYATİ ÖNEMDE)
     is_intern = (
@@ -308,7 +297,6 @@ def calculate_relevance_score(
         or "öğrenci" in title_norm
         or "genç yetenek" in title_norm
         or "uzun dönem" in title_norm
-        or "OSB Rehberi" in source  # OSB hedefleri zaten öğrenci İME başvuru fabrikalarıdır
     )
 
     # İME/Staj içermeyen tam zamanlı tecrübeli mühendis ilanları elenir
@@ -337,13 +325,9 @@ def calculate_relevance_score(
             if kw_norm in combined:
                 score += weight
 
-    # 6. Bölge Uyumu (+15 puan)
-    if any(normalize_tr(loc) in combined for loc in LOCATIONS):
+    # 6. Bölge Uyumu (+15 puan - Sadece Ana Lokasyona Göre)
+    if any(normalize_tr(loc) in loc_norm for loc in LOCATIONS):
         score += 15
-
-    # 7. OSB Kurumsal Fabrikaları (BSH, Arçelik, Lila vb.) Taban İME Puanı
-    if "OSB Rehberi" in source:
-        score = max(score, 90)
 
     # 8. Güncellik Bonusu (Son 3 gün: +10)
     if created_at:
