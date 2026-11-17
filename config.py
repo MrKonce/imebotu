@@ -144,7 +144,7 @@ MULTI_CITY_BLACKLIST = [
 
 # Tekirdağ / Trakya Bölgesi Dışındaki Elektrik Dağıtım / Alakasız Bölgesel Şirketler (Kesin Reddet)
 WRONG_REGIONAL_FIRMS = [
-    "yedaş", "yedas",  # Karadeniz (Samsun, Ordu, Çorum, Sinop, Amasya)
+    "yedaş", "yedas", "yeşilırmak", "yesilirmak",  # Karadeniz (Samsun, Ordu, Çorum, Sinop, Amasya)
     "toroslar",        # Güney (Adana, Mersin, Hatay, Gaziantep, Osmaniye, Kilis)
     "ayedaş", "ayedas", "bedaş", "bedas",
     "başkent edaş", "baskent edas", "başkent elektrik", "baskent elektrik",

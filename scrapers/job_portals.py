@@ -147,9 +147,6 @@ def _fetch_kariyernet_search(query: str, location_slug: str = "tekirdag") -> Lis
         print(f"[UYARI] Kariyer.net arama hatası ({query} - {location_slug}): {e}")
 
     return results
-        print(f"[UYARI] Kariyer.net arama hatası ({query} - {location_slug}): {e}")
-
-    return results
 
 
 def fetch_kariyernet_all() -> List[Dict[str, Any]]:

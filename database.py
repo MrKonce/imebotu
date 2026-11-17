@@ -179,6 +179,16 @@ def init_db(db_path: str = DB_PATH) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(source)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_active ON leads(is_active)")
+
+        # Bot meta verileri (Son tarama zamanı vb.)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_meta (
+                key TEXT PRIMARY KEY,
+                val TEXT
+            )
+            """
+        )
         conn.commit()
 
     # Başlangıçta eski veya alakasız şehir kayıtlarını otomatik ayıkla
@@ -186,6 +196,81 @@ def init_db(db_path: str = DB_PATH) -> None:
         purge_invalid_leads(db_path)
     except Exception as e:
         print(f"[UYARI] Otomatik lead temizliği geçici hata: {e}")
+
+
+def get_last_scan_time(db_path: str = DB_PATH) -> str:
+    """Sistemdeki en son yapılan taramanın zaman damgasını döndürür."""
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT val FROM bot_meta WHERE key = 'last_scan_time'")
+        row = cursor.fetchone()
+        if row and row["val"]:
+            return row["val"]
+    return datetime.now().strftime("%d.%m.%Y %H:%M")
+
+
+def set_last_scan_time(scan_time_str: Optional[str] = None, db_path: str = DB_PATH) -> None:
+    """Son yapılan taramanın zaman damgasını kaydeder."""
+    now_str = scan_time_str or datetime.now().strftime("%d.%m.%Y %H:%M")
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO bot_meta (key, val) VALUES ('last_scan_time', ?) "
+            "ON CONFLICT(key) DO UPDATE SET val = excluded.val",
+            (now_str,),
+        )
+        conn.commit()
+
+
+def delete_or_deactivate_dead_link(url: str, db_path: str = DB_PATH) -> bool:
+    """Ölü link (404, 500 veya kapanmış ilan) tespit edildiğinde veritabanından deaktif eder / siler."""
+    clean_url = url.strip()
+    if not clean_url:
+        return False
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE leads SET is_active = 0 WHERE url = ?", (clean_url,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_regional_breakdown(db_path: str = DB_PATH) -> Dict[str, int]:
+    """
+    Tekirdağ ilçelerine göre aktif ilan dağılımını hesaplar.
+    Örn: {'Çorlu': 5, 'Çerkezköy': 3, 'Ergene': 1, ...}
+    """
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT location FROM leads WHERE is_active = 1 AND relevance_score >= 30")
+        rows = cursor.fetchall()
+
+    counts = {
+        "Çorlu": 0,
+        "Çerkezköy": 0,
+        "Ergene": 0,
+        "Velimeşe": 0,
+        "Muratlı": 0,
+        "Kapaklı": 0,
+        "Süleymanpaşa": 0,
+    }
+    for r in rows:
+        loc = (r["location"] or "").lower()
+        if "çorlu" in loc or "corlu" in loc:
+            counts["Çorlu"] += 1
+        elif "çerkezköy" in loc or "cerkezkoy" in loc:
+            counts["Çerkezköy"] += 1
+        elif "velimeşe" in loc or "velimese" in loc:
+            counts["Velimeşe"] += 1
+        elif "ergene" in loc:
+            counts["Ergene"] += 1
+        elif "muratlı" in loc or "muratli" in loc:
+            counts["Muratlı"] += 1
+        elif "kapaklı" in loc or "kapakli" in loc:
+            counts["Kapaklı"] += 1
+        elif "süleymanpaşa" in loc or "suleymanpasa" in loc:
+            counts["Süleymanpaşa"] += 1
+
+    return {k: v for k, v in counts.items() if v > 0}
 
 
 def lead_exists(url: str, db_path: str = DB_PATH) -> bool:
@@ -441,7 +526,17 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
         return [dict(row) for row in rows]
 
 
-def get_report_leads(limit: int = 25, db_path: str = DB_PATH) -> Dict[str, Any]:
+def get_top_20_leads(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """En yeni ve E-E/İME/Staj açısından en uygun ilk 20 ilanı getirir."""
+    return get_ranked_leads(limit=20, db_path=db_path)
+
+
+def get_all_active_leads(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Katı lokasyon filtremizden geçen tüm aktif ilanları listeler."""
+    return get_ranked_leads(limit=500, db_path=db_path)
+
+
+def get_report_leads(limit: int = 20, db_path: str = DB_PATH) -> Dict[str, Any]:
     """Geriye dönük uyumluluk için get_ranked_leads wrapper'ı."""
     leads = get_ranked_leads(limit=limit, db_path=db_path)
     return {
@@ -489,6 +584,17 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
         cursor.execute("SELECT COUNT(DISTINCT company) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
         unique_companies = cursor.fetchone()[0]
 
+        # Son 24 saat içinde eklenen taze ilan sayısı
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM leads
+            WHERE is_active = 1
+              AND relevance_score >= 30
+              AND (julianday('now') - julianday(created_at)) <= 1.0
+            """
+        )
+        recent_24h_count = cursor.fetchone()[0] or 0
+
         # Son 3 gün içinde eklenen taze ilan sayısı
         cursor.execute(
             """
@@ -507,4 +613,5 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
             "average_score": round(avg_score, 1),
             "unique_companies": unique_companies,
             "recent_new_leads": new_recent_count,
+            "recent_24h_leads": recent_24h_count,
         }

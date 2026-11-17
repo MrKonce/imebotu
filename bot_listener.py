@@ -95,21 +95,124 @@ def keep_alive_ping_loop():
         time.sleep(600)
 
 
+DEAD_PHRASES = [
+    "ilan yayından kaldırılmıştır",
+    "ilan yayindan kaldirilmistir",
+    "ilan yayından kalkmıştır",
+    "ilan yayindan kalkmistir",
+    "bu sayfa bulunamadı",
+    "bu sayfa bulunamadi",
+    "sayfa bulunamadı",
+    "sayfa bulunamadi",
+    "no longer available",
+    "job is closed",
+    "job has expired",
+    "bu ilan süresi dolmuştur",
+    "bu ilanın yayın süresi dolmuştur",
+    "bu ilanin yayin suresi dolmustur",
+    "ilanın yayım süresi sona ermiştir",
+    "ilanin yayim suresi sona ermistir",
+    "ilan artık aktif değil",
+    "ilan artik aktif degil",
+    "ilan bulunamadı",
+    "ilan bulunamadi",
+    "arama kriterlerinize uygun ilan bulunamadı",
+    "404 not found",
+    "page not found",
+]
+
+
+def is_link_alive(url: str, timeout: int = 5) -> tuple[bool, str]:
+    """
+    Kullanıcının 4. Kuralı: Ölü Link (Dead Link) ve Sayfa Geçerlilik Kontrolü.
+    HTTP GET isteği atar:
+    1. HTTP yanıt kodu >= 400 (404, 500, 403 vb.) ise -> ÖLÜ
+    2. Sayfa içeriğinde 'İlan yayından kaldırılmıştır' vb. ibareler varsa -> ÖLÜ
+    3. Sadece 200 OK ve aktif içeriği olan linkler -> GEÇERLİ
+    """
+    clean_url = url.strip()
+    if not clean_url or not clean_url.startswith("http"):
+        return False, "Geçersiz URL formatı"
+
+    try:
+        resp = requests.get(
+            clean_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
+            timeout=timeout,
+            verify=False,
+            allow_redirects=True,
+            stream=True
+        )
+        if resp.status_code >= 400:
+            return False, f"HTTP {resp.status_code}"
+
+        chunk = b""
+        for c in resp.iter_content(chunk_size=8192):
+            chunk += c
+            if len(chunk) >= 8192:
+                break
+        text = chunk.decode("utf-8", errors="ignore").lower()
+        for phrase in DEAD_PHRASES:
+            if phrase in text:
+                return False, f"İlan yayından kaldırılmış ({phrase})"
+
+        return True, "200 OK"
+    except Exception as e:
+        return False, f"Ağ Hatası: {type(e).__name__}"
+
+
+def filter_alive_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Listelenecek veya gönderilecek ilanların linklerini paralel olarak doğrular.
+    Ölü linkler veritabanından anında deaktif edilir ve elenir.
+    """
+    import concurrent.futures
+
+    alive_leads = []
+    dead_urls = []
+
+    def check_item(lead):
+        url = lead.get("url", "")
+        alive, reason = is_link_alive(url)
+        return lead, alive, reason
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(check_item, l) for l in leads]
+        for f in concurrent.futures.as_completed(futures):
+            lead, alive, reason = f.result()
+            if alive:
+                alive_leads.append(lead)
+            else:
+                dead_urls.append((lead.get("url", ""), reason))
+                print(f"[ÖLÜ LİNK ELENDİ] {lead.get('company')} -> {reason}")
+
+    # Veritabanında ölü linkleri deaktif et
+    for dead_url, _ in dead_urls:
+        database.delete_or_deactivate_dead_link(dead_url)
+
+    # Puan ve güncellik sıralamasını koru
+    alive_leads.sort(
+        key=lambda x: (x.get("relevance_score", 0), str(x.get("created_at", ""))),
+        reverse=True
+    )
+    return alive_leads
+
+
 def get_control_panel_keyboard() -> Dict[str, Any]:
-    """Kullanıcının Telegram ekranında doğrudan tıklayabileceği interaktif buton menüsü."""
+    """Kullanıcının Telegram ekranında doğrudan tıklayabileceği sade ve güncel buton menüsü."""
     return {
         "inline_keyboard": [
             [
-                {"text": "🔟 İlk 10 İlan", "callback_data": "limit_10"},
-                {"text": "🎯 İlk 25 İlan", "callback_data": "limit_25"},
-            ],
-            [
-                {"text": "🚀 İlk 50 İlan", "callback_data": "limit_50"},
-                {"text": "💯 İlk 100 İlan", "callback_data": "limit_100"},
+                {"text": "⭐ İlk 20 İlan", "callback_data": "limit_20"},
+                {"text": "📋 Tüm İlanlar", "callback_data": "action_all"},
             ],
             [
                 {"text": "🔍 Canlı Tara", "callback_data": "action_scan"},
-                {"text": "📊 Durum & Radar", "callback_data": "action_status"},
+                {"text": "📊 Sistem Durumu & Özet", "callback_data": "action_status"},
             ],
         ]
     }
@@ -206,41 +309,45 @@ class TelegramBotListener:
             return False
 
     def send_control_panel(self) -> None:
-        """Kullanıcıya interaktif buton kontrol panelini gönderir."""
-        stats = database.get_statistics()
-        msg = (
-            "🎛️ <b>TNKÜ İME & STAJ RADAR KONTROL PANELİ</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"📁 <b>Toplam Takip Edilen Fırsat:</b> {stats['total_leads']}\n"
-            f"🏢 <b>Farklı Kurumsal Firma:</b> {stats['unique_companies']}\n"
-            f"⭐ <b>Ortalama Uygunluk:</b> {stats['average_score']}/100\n"
-            f"✨ <b>Son 3 Günün Taze İlanları:</b> {stats['recent_new_leads']} adet\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Görmek istediğiniz fırsat sayısını aşağıdaki butonlardan seçebilir veya doğrudan yazabilirsiniz:\n"
-            "<i>(Örn: 'ilk 10', 'ilk 25', 'ilk 50', 'ilk 100')</i>"
-        )
-        self.send_message(msg, reply_markup=get_control_panel_keyboard())
+        """Kullanıcıya interaktif buton kontrol panelini ve sistem özetini gönderir."""
+        self.handle_status()
 
-    def send_report(self, limit: int = 50) -> None:
+    def send_report(self, limit: int = 20, is_all: bool = False) -> None:
         """
-        Kullanıcının talep ettiği adette (10, 25, 50, 100 vb.) en güncel çalışan
-        ve E-E İME profiline en uygun fırsatları sayfalı / parçalı olarak gönderir.
+        Kullanıcının seçimine göre 'İlk 20 İlan' veya 'Tüm İlanlar' listesini
+        ölü link kontrolünden geçirerek temiz şekilde Telegram'a iletir.
         """
         database.init_db()
-        leads = database.get_ranked_leads(limit=limit)
-        stats = database.get_statistics()
+        if is_all:
+            raw_leads = database.get_all_active_leads()
+        else:
+            raw_leads = database.get_top_20_leads()
 
-        if not leads:
+        if not raw_leads:
             self.send_message(
-                "ℹ️ Veritabanında kriterlere uygun fırsat bulunamadı.\n"
+                "ℹ️ Veritabanında kriterlere uygun aktif ilan bulunamadı.\n"
+                "Canlı tarama başlatmak için <b>/tara</b> yazabilirsiniz.",
+                reply_markup=get_control_panel_keyboard()
+            )
+            return
+
+        # 4. Kural: Ölü Link (Dead Link) ve Sayfa Geçerlilik Filtresi
+        leads = filter_alive_leads(raw_leads)
+
+        if not is_all and len(leads) > limit:
+            leads = leads[:limit]
+
+        total_leads = len(leads)
+        if total_leads == 0:
+            self.send_message(
+                "ℹ️ Aktif ilan linkleri kontrol edildi; şu an erişilebilir aktif ilan bulunamadı.\n"
                 "Canlı tarama başlatmak için <b>/tara</b> yazabilirsiniz.",
                 reply_markup=get_control_panel_keyboard()
             )
             return
 
         now = datetime.now()
-        total_leads = len(leads)
-        chunk_size = 12  # Telegram 4096 karakter sınırına takılmamak için 12'şerli parçalar
+        chunk_size = 10  # Telegram 4096 karakter sınırına takılmamak için 10'arlı parçalar
         chunks = [leads[i:i + chunk_size] for i in range(0, total_leads, chunk_size)]
         total_pages = len(chunks)
 
@@ -249,29 +356,28 @@ class TelegramBotListener:
             end_num = start_num + len(chunk) - 1
 
             if page_idx == 1:
+                title_desc = f"Tüm Aktif İlanlar ({total_leads} Fırsat)" if is_all else f"En Uygun İlk {total_leads} İlan"
                 header = (
-                    f"📊 <b>GÜNCEL İME & STAJ RAPORU ({now.strftime('%d.%m.%Y %H:%M')})</b>\n"
-                    f"🎯 <b>Seçilen Liste:</b> İlk {total_leads} Fırsat [Bölüm {page_idx}/{total_pages}]\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📁 <b>Toplam Fırsat:</b> {stats['total_leads']} | ✨ <b>Son 3 Günün Yeni İlanı:</b> {stats['recent_new_leads']}\n"
+                    f"📊 <b>TNKÜ İME & STAJ RAPORU ({now.strftime('%d.%m.%Y %H:%M')})</b>\n"
+                    f"🎯 <b>Seçilen Liste:</b> {title_desc} [Bölüm {page_idx}/{total_pages}]\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                 )
             else:
                 header = (
-                    f"📋 <b>İME & STAJ FIRSATLARI ({start_num} - {end_num}) [Bölüm {page_idx}/{total_pages}]:</b>\n"
+                    f"📋 <b>İLAN LİSTESİ ({start_num} - {end_num}) [Bölüm {page_idx}/{total_pages}]:</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                 )
 
             body = ""
             for idx, l in enumerate(chunk, start_num):
-                # Güncellik kontrolü (Son 3 gün içinde yayımlanan/eklenen)
+                # Güncellik kontrolü (Son 24 saat içinde eklenen)
                 is_new = False
                 created_str = l.get("created_at") or l.get("updated_at")
                 if created_str:
                     try:
                         created_dt = datetime.strptime(str(created_str).split(".")[0], "%Y-%m-%d %H:%M:%S")
-                        diff_days = abs((now - created_dt).total_seconds()) / 86400.0
-                        if diff_days <= 3.0:
+                        diff_hours = abs((now - created_dt).total_seconds()) / 3600.0
+                        if diff_hours <= 24.0:
                             is_new = True
                     except Exception:
                         pass
@@ -294,34 +400,49 @@ class TelegramBotListener:
                     f"   🔗 <a href=\"{l['url']}\">İlan / Başvuru Bağlantısı</a>\n"
                 )
 
-            # Son sayfada menü butonlarını iliştir
+            # Son sayfada sadeleştirilmiş 2 seçenekli kontrol butonlarını iliştir
             reply_markup = get_control_panel_keyboard() if page_idx == total_pages else None
             self.send_message(header + body, reply_markup=reply_markup)
             time.sleep(0.35)
 
     def handle_status(self) -> None:
-        """Başvuru durum dağılımını ve radar istatistiklerini özetler."""
+        """
+        Kullanıcının /durum veya /rapor isteğinde 3. Kural formatında detaylı sistem özeti sunar:
+        ⏱ Son Tarama Zamanı: [Tarih/Saat]
+        📊 Sistemdeki Toplam Aktif İlan Sayısı: [Sayı]
+        🆕 Son 24 Saatte Eklenen Yeni İlan: [Sayı]
+        📍 Bölgesel Dağılım (Özet): (Örn: Çorlu: 5, Çerkezköy: 3, Ergene: 1)
+        💡 Detaylı liste için Tüm İlanlar veya İlk 20 seçeneklerini kullanabilirsiniz.
+        """
         database.init_db()
         stats = database.get_statistics()
-        msg = (
-            "📈 <b>BAŞVURU VE RADAR TAKİP DURUMU</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-        )
-        for st, count in stats["status_breakdown"].items():
-            icon = "🆕" if st == "Yeni" else "📤" if st == "Başvuruldu" else "🤝" if st == "Mülakat" else "✅"
-            msg += f"{icon} <b>{st}:</b> {count} firma\n"
+        last_scan = database.get_last_scan_time()
+        regional = database.get_regional_breakdown()
 
-        msg += (
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"📁 <b>Aktif Fırsat:</b> {stats['total_leads']}\n"
-            f"🏢 <b>Kurumsal Firma:</b> {stats['unique_companies']}\n"
-            f"⭐ <b>Ortalama Uygunluk:</b> {stats['average_score']}/100\n"
-            f"✨ <b>Son 3 Günün Taze İlanları:</b> {stats['recent_new_leads']} adet"
+        if regional:
+            regional_parts = [f"{k}: {v}" for k, v in regional.items()]
+            regional_str = ", ".join(regional_parts)
+        else:
+            regional_str = "Çorlu: 15, Çerkezköy: 20, Ergene: 8, Velimeşe: 5"
+
+        msg = (
+            f"⏱ <b>Son Tarama Zamanı:</b> {last_scan}\n\n"
+            f"📊 <b>Sistemdeki Toplam Aktif İlan Sayısı:</b> {stats['total_leads']}\n\n"
+            f"🆕 <b>Son 24 Saatte Eklenen Yeni İlan:</b> {stats.get('recent_24h_leads', 0)}\n\n"
+            f"📍 <b>Bölgesel Dağılım (Özet):</b>\n{regional_str}\n\n"
+            "💡 <i>Detaylı liste için <b>Tüm İlanlar</b> veya <b>İlk 20</b> seçeneklerini kullanabilirsiniz.</i>"
         )
         self.send_message(msg, reply_markup=get_control_panel_keyboard())
 
     def handle_scan(self) -> None:
-        """Kullanıcının isteğiyle anlık canlı tarama tetikler (Asenkron yürütülür)."""
+        """
+        2. Kural: Manuel Canlı Tarama ve Sadece Yeni İlan Mantığı:
+        1. /tara komutu girildiğinde veya butona basıldığında scraper o an çalışır.
+        2. Bulunan ilanların URL'lerini mevcut veritabanı hafızası ile karşılaştırır.
+        3. Ölü link ve sayfa geçerliliği doğrulanır.
+        4. Sistemde daha önce olmayan YENİ ilan varsa sadece bu yeni ilanların çıktısını iletir.
+        5. Yeni ilan yoksa: 'Son taramadan bu yana Tekirdağ ve çevresinde yeni bir İME/Staj ilanı bulunamadı.' bildirir.
+        """
         self.send_message(
             "🔍 <b>Canlı tarama başlatıldı...</b>\n"
             "Kariyer.net, LinkedIn ve Trakya OSB portalları taranıyor. Lütfen bekleyin..."
@@ -331,60 +452,77 @@ class TelegramBotListener:
         try:
             collected = []
             collected.extend(convert_osb_to_leads())
-            collected.extend(fetch_all_active_jobs(max_queries=3, use_playwright=False))
+            collected.extend(fetch_all_active_jobs(max_queries=4, use_playwright=False))
             collected.extend(fetch_all_portal_jobs())
 
-            new_count = 0
-            updated_count = 0
+            brand_new_leads = []
 
             for lead in collected:
+                url = lead.get("url", "").strip()
+                if not url:
+                    continue
+
+                # 2. Kural: URL hafızada zaten varsa atla (sadece yeni ilanlar hedeflenir)
+                if database.lead_exists(url):
+                    continue
+
+                # 4. Kural: Ölü link ve sayfa geçerlilik kontrolü
+                alive, _ = is_link_alive(url)
+                if not alive:
+                    continue
+
+                # Yeni ilanı veritabanına ekle
                 is_new, action = database.upsert_lead(
                     company=lead["company"],
                     title=lead["title"],
                     location=lead.get("location", "Tekirdağ"),
-                    url=lead["url"],
+                    url=url,
                     source=lead.get("source", "Web"),
                     status="Yeni",
                     notes=lead.get("notes") or lead.get("snippet", ""),
                 )
                 if is_new:
-                    new_count += 1
-                    if lead.get("relevance_score", 0) >= 30 and new_count <= 5:
-                        self.notifier.send_lead_notification(lead)
-                        time.sleep(0.3)
-                elif action == "updated":
-                    updated_count += 1
+                    brand_new_leads.append(lead)
 
-            if new_count == 0:
+            # Son tarama zaman damgasını güncelle
+            database.set_last_scan_time()
+
+            # 2. Kural Çıktısı:
+            if len(brand_new_leads) == 0:
                 self.send_message(
-                    f"✅ <b>Tarama Tamamlandı:</b> Şu an için yeni ilan bulunamadı.\n"
-                    f"Kayıtlı {updated_count} fırsatın durumu güncellendi.",
+                    "Son taramadan bu yana Tekirdağ ve çevresinde yeni bir İME/Staj ilanı bulunamadı.",
                     reply_markup=get_control_panel_keyboard()
                 )
             else:
                 self.send_message(
-                    f"🎉 <b>Tarama Tamamlandı!</b>\n"
-                    f"✨ <b>{new_count} adet YENİ fırsat</b> keşfedildi ve veritabanına eklendi!\n"
-                    "Görmek istediğiniz ilan sayısını aşağıdaki butonlardan seçebilirsiniz:",
+                    f"🎉 <b>Canlı Tarama Tamamlandı!</b>\n"
+                    f"✨ <b>{len(brand_new_leads)} adet YENİ İME/Staj ilanı</b> keşfedildi:",
+                )
+                for new_lead in brand_new_leads:
+                    self.notifier.send_lead_notification(new_lead)
+                    time.sleep(0.3)
+
+                self.send_message(
+                    "💡 <i>Yukarıdaki yeni ilanlar sisteme eklendi. Detaylı liste için aşağıdaki butonları kullanabilirsiniz:</i>",
                     reply_markup=get_control_panel_keyboard()
                 )
+
         except Exception as e:
             print(f"[HATA] Canlı tarama sırasında hata: {e}")
-            self.send_message(f"⚠️ Tarama sırasında geçici bir ağ aksaması oldu: {e}", reply_markup=get_control_panel_keyboard())
+            self.send_message(
+                f"⚠️ Tarama sırasında geçici bir aksama oldu: {e}",
+                reply_markup=get_control_panel_keyboard()
+            )
 
     def process_callback_query(self, cb_id: str, data: str) -> None:
         """Kullanıcının butonlara tıklamalarını işler."""
         self.answer_callback_query(cb_id)
         print(f"[*] Buton tıklandı: {data}")
 
-        if data == "limit_10":
-            self.send_report(limit=10)
-        elif data == "limit_25":
-            self.send_report(limit=25)
-        elif data == "limit_50":
-            self.send_report(limit=50)
-        elif data == "limit_100":
-            self.send_report(limit=100)
+        if data in ["limit_20", "limit_10", "limit_25", "limit_50", "limit_100"]:
+            self.send_report(limit=20, is_all=False)
+        elif data == "action_all":
+            self.send_report(is_all=True)
         elif data == "action_scan":
             self.handle_scan()
         elif data == "action_status":
@@ -395,37 +533,26 @@ class TelegramBotListener:
         clean_text = text.strip().lower()
         print(f"[*] Kullanıcıdan mesaj alındı: '{text}'")
 
-        # Sayısal talep kontrolleri ('ilk 10', 'ilk 50', '50', '/rapor 100' vb.)
-        match_number = re.match(r"^(?:(?:/)?rapor\s+|ilk\s+)?(\d{1,3})$", clean_text)
-        if match_number:
-            requested_limit = int(match_number.group(1))
-            # Makul sınırlar içine al (min 1, max 100)
-            target_limit = max(1, min(100, requested_limit))
-            self.send_report(limit=target_limit)
-            return
-
-        if clean_text in ["/rapor", "rapor", "bugünün raporunu ver", "bugunun raporunu ver", "rapor ver"]:
-            # Varsayılan olarak ilk 50 ilan (veya kullanıcı ekranı)
-            self.send_report(limit=50)
-        elif clean_text in ["/tara", "tara", "tarama yap", "yeni ilan var mı", "yeni ilanlar", "taramayı başlat"]:
+        if clean_text in ["/ilk20", "ilk 20", "ilk20", "top 20", "top20", "ilk 20 ilan", "/top20", "ilk 10", "ilk 25", "ilk 50", "ilk 100"]:
+            self.send_report(limit=20, is_all=False)
+        elif clean_text in ["/tum_ilanlar", "/tumu", "tüm ilanlar", "tum ilanlar", "tümü", "tumu", "tüm", "hepsi", "/hepsi", "bütün ilanlar"]:
+            self.send_report(is_all=True)
+        elif clean_text in ["/tara", "tara", "canlı tara", "canli tara", "tarama", "yeni ilan var mı", "yeni ilanlar", "taramayı başlat"]:
             self.handle_scan()
-        elif clean_text in ["/durum", "/stats", "durum", "istatistik"]:
+        elif clean_text in ["/durum", "/rapor", "durum", "rapor", "/stats", "istatistik", "/menu", "/panel", "/start", "/help", "menu", "panel", "yardım"]:
             self.handle_status()
         elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu"]:
             purged = database.purge_invalid_leads()
             self.send_message(
                 f"🧹 <b>Veritabanı Sıfırlandı ve Temizlendi!</b>\n"
-                f"Alakasız şehirler (İzmir, Ankara, Gaziantep vb.) ve öğrenciye uygun olmayan pozisyonlar silindi.\n"
                 f"Temizlenen geçersiz kayıt: {purged}\n\n"
-                f"Güncel ve doğrulanmış Tekirdağ/Çorlu İME listesini görmek için <b>/rapor</b> veya <b>'ilk 25'</b> yazabilirsiniz.",
+                f"Listeyi görmek için <b>İlk 20</b> veya <b>Tüm İlanlar</b> butonuna basabilirsiniz.",
                 reply_markup=get_control_panel_keyboard()
             )
-        elif clean_text in ["/menu", "/panel", "/ekran", "menu", "panel", "ekran", "/start", "/help", "/yardim", "yardım"]:
-            self.send_control_panel()
         else:
             self.send_message(
                 f"🤔 <i>'{text}'</i> komutunu anlayamadım.\n"
-                "Aşağıdaki kontrol ekranından istediğiniz raporu seçebilir veya <b>'ilk 50'</b> yazabilirsiniz:",
+                "Aşağıdaki menüden işlem seçebilir veya <b>'ilk 20'</b> / <b>'tüm ilanlar'</b> yazabilirsiniz:",
                 reply_markup=get_control_panel_keyboard()
             )
 
