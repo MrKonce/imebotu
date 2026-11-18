@@ -237,6 +237,24 @@ def init_db(db_path: str = DB_PATH) -> None:
     except Exception as e:
         print(f"[UYARI] Otomatik lead temizliği geçici hata: {e}")
 
+    # Başlangıçta doğrulanmış kurumsal sanayi ve üniversite hedeflerini sağla (BSH, Unilever Magnum vb.)
+    try:
+        from scrapers.osb_directory import scrape_direct_ime_and_osb
+        corp_leads = scrape_direct_ime_and_osb()
+        for cl in corp_leads:
+            upsert_lead(
+                company=cl["company"],
+                title=cl["title"],
+                location=cl["location"],
+                url=cl["url"],
+                source=cl["source"],
+                status="Yeni",
+                notes=cl.get("notes", ""),
+                db_path=db_path
+            )
+    except Exception as e:
+        print(f"[UYARI] Kurumsal hedefleri ilklendirme hatası: {e}")
+
 
 def add_rejected_url(url: str, reason: str = "", db_path: str = DB_PATH) -> bool:
     """Reddedilen / elenen URL'i ve sebebini veritabanına kaydeder."""

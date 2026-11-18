@@ -56,7 +56,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
         body = (
             f"TNKU IME ve Staj Telegram Robotu 7/24 Calisiyor!\n"
-            f"Surum: v3.1-clean-ui-zero-junk\n"
+            f"Surum: v3.2-bsh-magnum-restored\n"
             f"Toplam Aktif Yerel Firsat: {total}\n"
             f"1 Numarali Ilan: {top_info}\n"
         )
@@ -200,8 +200,16 @@ def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", ti
             stream=False
         )
         if resp.status_code != 200:
-            database.add_rejected_url(clean_url, f"HTTP {resp.status_code}")
-            return False, f"HTTP {resp.status_code}"
+            if resp.status_code in [403, 429, 999]:
+                # Cloudflare / Akamai bot duvarı: Bulut sunucu IP'sini engellediği için
+                # ilanın kendisi ölü değildir; geçerli kabul edilir.
+                return True, f"HTTP {resp.status_code} (Bot Koruması / Aktif Kabul Edildi)"
+            elif resp.status_code in [404, 410]:
+                database.add_rejected_url(clean_url, f"HTTP {resp.status_code} (Sayfa Yok / Kaldırılmış)")
+                return False, f"HTTP {resp.status_code} (Sayfa Yok / Kaldırılmış)"
+            else:
+                database.add_rejected_url(clean_url, f"HTTP {resp.status_code}")
+                return False, f"HTTP {resp.status_code}"
 
         html_text = resp.text.lower()
 
@@ -446,20 +454,11 @@ class TelegramBotListener:
             )
             return
 
-        # 4. Kural: Ölü Link (Dead Link) ve Sayfa Geçerlilik Filtresi
-        leads = filter_alive_leads(raw_leads)
-
+        leads = raw_leads
         if not is_all and len(leads) > limit:
             leads = leads[:limit]
 
         total_leads = len(leads)
-        if total_leads == 0:
-            self.send_message(
-                "ℹ️ Aktif ilan linkleri kontrol edildi; şu an erişilebilir aktif ilan bulunamadı.\n"
-                "Canlı tarama başlatmak için <b>/tara</b> yazabilirsiniz.",
-                reply_markup=get_control_panel_keyboard()
-            )
-            return
 
         now = datetime.now()
         chunk_size = 10  # Telegram 4096 karakter sınırına takılmamak için 10'arlı parçalar
@@ -542,15 +541,7 @@ class TelegramBotListener:
             )
             return
 
-        leads = filter_alive_leads(raw_leads)
-        if not leads:
-            self.send_message(
-                "ℹ️ Son 24 saatte eklenen ilanlar kontrol edildi ancak şu an aktif/erişilebilir yeni ilan kalmadı.\n\n"
-                "🔍 Yeni tarama başlatmak için <b>Canlı Tara</b> butonuna basabilirsiniz.",
-                reply_markup=get_control_panel_keyboard()
-            )
-            return
-
+        leads = raw_leads
         now = datetime.now()
         total_leads = len(leads)
         chunk_size = 10
