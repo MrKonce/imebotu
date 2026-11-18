@@ -655,6 +655,78 @@ def get_all_active_leads(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
     return get_ranked_leads(limit=500, db_path=db_path)
 
 
+def get_recent_24h_leads(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Son 24 saat içinde sisteme eklenmiş aktif ve kurallara uygun ilanları getirir."""
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        since_time = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            """
+            SELECT * FROM leads
+            WHERE is_active = 1
+              AND relevance_score >= ?
+              AND created_at >= ?
+              AND LOWER(company) NOT LIKE '%dh teknik%'
+              AND LOWER(company) NOT LIKE '%şara%'
+              AND LOWER(company) NOT LIKE '%sara%'
+              AND LOWER(company) NOT LIKE '%akbaş%'
+              AND LOWER(company) NOT LIKE '%green diamond%'
+              AND LOWER(company) NOT LIKE '%remax%'
+              AND LOWER(company) NOT LIKE '%yeda%'
+              AND LOWER(company) NOT LIKE '%yeşilırmak%'
+              AND LOWER(company) NOT LIKE '%yesilirmak%'
+              AND LOWER(company) NOT LIKE '%toroslar%'
+              AND LOWER(company) NOT LIKE '%başkent eda%'
+              AND LOWER(company) NOT LIKE '%baskent eda%'
+              AND LOWER(company) NOT LIKE '%şenpiliç%'
+              AND LOWER(company) NOT LIKE '%senpilic%'
+              AND LOWER(company) NOT LIKE '%bel karper%'
+              AND LOWER(company) NOT LIKE '%zorluteks%'
+              AND LOWER(title) NOT LIKE '%şantiye%'
+              AND LOWER(title) NOT LIKE '%müdür%'
+              AND LOWER(title) NOT LIKE '%kıdemli%'
+              AND LOWER(title) NOT LIKE '%senior%'
+              AND LOWER(title) NOT LIKE '%gayrimenkul%'
+              AND LOWER(title) NOT LIKE '%adana%'
+              AND LOWER(title) NOT LIKE '%samsun%'
+              AND (
+                  LOWER(location) LIKE '%tekirdağ%'
+                  OR LOWER(location) LIKE '%tekirdag%'
+                  OR LOWER(location) LIKE '%çorlu%'
+                  OR LOWER(location) LIKE '%corlu%'
+                  OR LOWER(location) LIKE '%çerkezköy%'
+                  OR LOWER(location) LIKE '%cerkezkoy%'
+                  OR LOWER(location) LIKE '%ergene%'
+                  OR LOWER(location) LIKE '%velimeşe%'
+                  OR LOWER(location) LIKE '%velimese%'
+                  OR LOWER(location) LIKE '%muratlı%'
+                  OR LOWER(location) LIKE '%muratli%'
+                  OR LOWER(location) LIKE '%kapaklı%'
+                  OR LOWER(location) LIKE '%kapakli%'
+                  OR LOWER(location) LIKE '%süleymanpaşa%'
+                  OR LOWER(location) LIKE '%suleymanpasa%'
+              )
+              AND source NOT LIKE 'OSB Rehberi%'
+              AND LOWER(location) NOT LIKE '%izmir%'
+              AND LOWER(location) NOT LIKE '%ankara%'
+              AND LOWER(location) NOT LIKE '%gaziantep%'
+              AND LOWER(location) NOT LIKE '%samsun%'
+              AND LOWER(location) NOT LIKE '%adana%'
+              AND LOWER(location) NOT LIKE '%esenyurt%'
+              AND LOWER(location) NOT LIKE '%yozgat%'
+              AND LOWER(location) NOT LIKE '%ordu%'
+              AND LOWER(location) NOT LIKE '%türkiye geneli%'
+              AND LOWER(location) NOT LIKE '%turkiye geneli%'
+              AND LOWER(location) NOT LIKE '%tüm şehirler%'
+              AND LOWER(location) NOT LIKE '%tum sehirler%'
+            ORDER BY created_at DESC, relevance_score DESC
+            """,
+            (MIN_RELEVANCE_SCORE, since_time)
+        )
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 def get_report_leads(limit: int = 20, db_path: str = DB_PATH) -> Dict[str, Any]:
     """Geriye dönük uyumluluk için get_ranked_leads wrapper'ı."""
     leads = get_ranked_leads(limit=limit, db_path=db_path)

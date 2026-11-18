@@ -9,6 +9,7 @@ import os
 import re
 import time
 import threading
+import urllib.parse
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
@@ -55,7 +56,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
         body = (
             f"TNKU IME ve Staj Telegram Robotu 7/24 Calisiyor!\n"
-            f"Surum: v3.0-dom-strict-whitelist\n"
+            f"Surum: v3.1-clean-ui-zero-junk\n"
             f"Toplam Aktif Yerel Firsat: {total}\n"
             f"1 Numarali Ilan: {top_info}\n"
         )
@@ -182,9 +183,10 @@ def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", ti
         database.add_rejected_url(clean_url, f"Toplu İlan Havuzu Sayfası ({netloc_in})")
         return False, f"Toplu İlan Havuzu Sayfası ({netloc_in})"
 
+    from config import USER_AGENT
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
     }
 
@@ -282,16 +284,20 @@ def filter_alive_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def get_control_panel_keyboard() -> Dict[str, Any]:
-    """Kullanıcının Telegram ekranında doğrudan tıklayabileceği sade ve güncel buton menüsü."""
+    """Kullanıcının Telegram ekranında doğrudan tıklayabileceği 6 butonlu kontrol paneli."""
     return {
         "inline_keyboard": [
+            [
+                {"text": "🔍 Canlı Tara", "callback_data": "action_scan"},
+                {"text": "🆕 Yeni İlanlar (24s)", "callback_data": "action_new"},
+            ],
             [
                 {"text": "⭐ İlk 20 İlan", "callback_data": "limit_20"},
                 {"text": "📋 Tüm İlanlar", "callback_data": "action_all"},
             ],
             [
-                {"text": "🔍 Canlı Tara", "callback_data": "action_scan"},
-                {"text": "📊 Sistem Durumu & Özet", "callback_data": "action_status"},
+                {"text": "🧹 Listeyi Temizle", "callback_data": "action_purge"},
+                {"text": "📊 Sistem Durumu", "callback_data": "action_status"},
             ],
         ]
     }
@@ -487,10 +493,96 @@ class TelegramBotListener:
                     f"   🔗 <a href=\"{l['url']}\">İlan / Başvuru Bağlantısı</a>\n"
                 )
 
-            # Son sayfada sadeleştirilmiş 2 seçenekli kontrol butonlarını iliştir
+            # Son sayfada sadeleştirilmiş 6 seçenekli kontrol butonlarını iliştir
             reply_markup = get_control_panel_keyboard() if page_idx == total_pages else None
             self.send_message(header + body, reply_markup=reply_markup)
             time.sleep(0.35)
+
+    def send_recent_24h_report(self) -> None:
+        """
+        Son 24 saat içinde sisteme eklenmiş taze ilanları listeler.
+        Eğer son 24 saatte yeni ilan yoksa kullanıcıyı bilgilendirir.
+        """
+        database.init_db()
+        raw_leads = database.get_recent_24h_leads()
+        if not raw_leads:
+            self.send_message(
+                "ℹ️ <b>Son 24 saat içinde eklenmiş yeni bir ilan bulunmuyor.</b>\n\n"
+                "🔍 Yeni ilanları aramak için <b>Canlı Tara</b> butonuna basabilir, "
+                "mevcut tüm ilanları görmek için <b>İlk 20 İlan</b> veya <b>Tüm İlanlar</b> butonunu kullanabilirsiniz.",
+                reply_markup=get_control_panel_keyboard()
+            )
+            return
+
+        leads = filter_alive_leads(raw_leads)
+        if not leads:
+            self.send_message(
+                "ℹ️ Son 24 saatte eklenen ilanlar kontrol edildi ancak şu an aktif/erişilebilir yeni ilan kalmadı.\n\n"
+                "🔍 Yeni tarama başlatmak için <b>Canlı Tara</b> butonuna basabilirsiniz.",
+                reply_markup=get_control_panel_keyboard()
+            )
+            return
+
+        now = datetime.now()
+        total_leads = len(leads)
+        chunk_size = 10
+        chunks = [leads[i:i + chunk_size] for i in range(0, total_leads, chunk_size)]
+        total_pages = len(chunks)
+
+        for page_idx, chunk in enumerate(chunks, 1):
+            start_num = (page_idx - 1) * chunk_size + 1
+            end_num = start_num + len(chunk) - 1
+            if page_idx == 1:
+                header = (
+                    f"🆕 <b>SON 24 SAATİN YENİ İLANLARI ({total_leads} Fırsat) [Bölüm {page_idx}/{total_pages}]</b>\n"
+                    f"⏱ <b>Tarih:</b> {now.strftime('%d.%m.%Y %H:%M')}\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                )
+            else:
+                header = (
+                    f"📋 <b>YENİ İLAN LİSTESİ ({start_num} - {end_num}) [Bölüm {page_idx}/{total_pages}]:</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                )
+
+            body = ""
+            for idx, l in enumerate(chunk, start_num):
+                source_clean = l.get("source", "Web")
+                body += (
+                    f"\n<b>{idx}. {l['company']}</b> (⭐ {l['relevance_score']}/100) 🆕 <b>(*yeni ilan*)</b>\n"
+                    f"   📌 {l['title']} <i>[{source_clean}]</i>\n"
+                    f"   📍 {l['location']}\n"
+                    f"   🔗 <a href=\"{l['url']}\">İlan / Başvuru Bağlantısı</a>\n"
+                )
+
+            reply_markup = get_control_panel_keyboard() if page_idx == total_pages else None
+            self.send_message(header + body, reply_markup=reply_markup)
+            time.sleep(0.35)
+
+    def handle_purge(self) -> None:
+        """
+        Kullanıcının talep ettiği liste temizleme ve doğrulama işlemi:
+        1. Veritabanındaki eski/hatalı, alakasız şehir ve statik firma artıklarını siler.
+        2. Kalan tüm aktif linkleri canlı olarak test edip ölü/kapanan linkleri ayıklar.
+        3. Sonucu ve kalan gerçek fırsat sayısını raporlar.
+        """
+        self.send_message("🧹 <b>Veritabanı temizliği ve canlı link doğrulama başlatıldı...</b>\nLütfen bekleyin...")
+        database.init_db()
+        purged_count = database.purge_invalid_leads()
+
+        # Kalan aktif kayıtları alıp ölü link filtresinden geçir
+        active_leads = database.get_all_active_leads()
+        alive_leads = filter_alive_leads(active_leads)
+        dead_count = len(active_leads) - len(alive_leads)
+        total_active = len(alive_leads)
+
+        self.send_message(
+            f"🧹 <b>Veritabanı Başarıyla Temizlendi ve Doğrulandı!</b>\n\n"
+            f"🗑 <b>Silinen Hatalı / Statik Kayıt:</b> {purged_count}\n"
+            f"🚫 <b>Ayıklanan Kırık / Kapanmış Link:</b> {dead_count}\n"
+            f"✅ <b>Kalan %100 Doğrulanmış Aktif İlan:</b> {total_active}\n\n"
+            f"Fırsatları görmek için <b>İlk 20 İlan</b> veya <b>Tüm İlanlar</b> butonuna basabilirsiniz.",
+            reply_markup=get_control_panel_keyboard()
+        )
 
     def handle_status(self) -> None:
         """
@@ -614,8 +706,12 @@ class TelegramBotListener:
             self.send_report(limit=20, is_all=False)
         elif data == "action_all":
             self.send_report(is_all=True)
+        elif data == "action_new":
+            self.send_recent_24h_report()
         elif data == "action_scan":
             self.handle_scan()
+        elif data == "action_purge":
+            self.handle_purge()
         elif data == "action_status":
             self.handle_status()
 
@@ -628,7 +724,9 @@ class TelegramBotListener:
             self.send_report(limit=20, is_all=False)
         elif clean_text in ["/tum_ilanlar", "/tumu", "tüm ilanlar", "tum ilanlar", "tümü", "tumu", "tüm", "hepsi", "/hepsi", "bütün ilanlar"]:
             self.send_report(is_all=True)
-        elif clean_text in ["/tara", "tara", "canlı tara", "canli tara", "tarama", "yeni ilan var mı", "yeni ilanlar", "taramayı başlat"]:
+        elif clean_text in ["/yeni", "/yeni_ilanlar", "yeni", "yeni ilanlar", "yeni ilan", "yeni staj", "yeni fırsatlar", "yeni firsatlar"]:
+            self.send_recent_24h_report()
+        elif clean_text in ["/tara", "tara", "canlı tara", "canli tara", "tarama", "yeni ilan var mı", "taramayı başlat"]:
             self.handle_scan()
         elif clean_text in ["/durum", "/rapor", "durum", "rapor", "/stats", "istatistik", "/menu", "/panel", "/start", "/help", "menu", "panel", "yardım"]:
             self.handle_status()
@@ -661,15 +759,8 @@ class TelegramBotListener:
                     "ℹ️ <b>Kullanım:</b> <code>/sirket_ekle ŞirketAdı KariyerURL</code>\n"
                     "Örnek: <code>/sirket_ekle Arçelik https://careers.arcelik.com/jobs</code>"
                 )
-        elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu", "/flush", "flush"]:
-            purged = database.purge_invalid_leads()
-            self.send_message(
-                f"🧹 <b>Veritabanı Sıfırlandı ve Temizlendi!</b>\n"
-                f"Alakasız şehirler, kırık linkler ve hayalet ilanlar temizlendi.\n"
-                f"Temizlenen geçersiz kayıt: {purged}\n\n"
-                f"Listeyi görmek için <b>İlk 20</b> veya <b>Tüm İlanlar</b> butonuna basabilirsiniz.",
-                reply_markup=get_control_panel_keyboard()
-            )
+        elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "listeyi temizle", "temizle botu", "/flush", "flush"]:
+            self.handle_purge()
         else:
             self.send_message(
                 f"🤔 <i>'{text}'</i> komutunu anlayamadım.\n"
