@@ -16,7 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SCAN_INTERVAL_HOURS
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SCAN_INTERVAL_HOURS, MIN_RELEVANCE_SCORE
 import database
 from notifier import TelegramNotifier
 from scrapers.osb_directory import convert_osb_to_leads
@@ -88,8 +88,8 @@ def run_pipeline(sync_osb: bool = False, use_playwright: bool = False) -> None:
         if is_new:
             new_leads_count += 1
             print(f"[YENİ] {lead['company']} - {lead['title']} (Skor: {score}/100)")
-            # Yüksek uygunluklu olanları (Skor >= 30) Telegram'a bildir (spam önleme: max 8)
-            if score >= 30 and new_leads_count <= 8:
+            # Yüksek uygunluklu olanları (Skor >= MIN_RELEVANCE_SCORE) Telegram'a bildir (spam önleme: max 8)
+            if score >= MIN_RELEVANCE_SCORE and new_leads_count <= 8:
                 notifier.send_lead_notification(lead)
                 time.sleep(0.3)
         elif action == "updated":

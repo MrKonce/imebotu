@@ -1,7 +1,7 @@
 import sqlite3
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
-from config import DB_PATH, NEGATIVE_KEYWORDS, calculate_relevance_score
+from config import DB_PATH, NEGATIVE_KEYWORDS, MIN_RELEVANCE_SCORE, calculate_relevance_score
 
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -53,9 +53,10 @@ def rescore_all_leads(db_path: str = DB_PATH) -> int:
 
 def purge_invalid_leads(db_path: str = DB_PATH) -> int:
     """
-    Veritabanındaki alakasız şehirleri (İzmir, Ankara, Gaziantep, Adana, Samsun vb.),
+    Veritabanındaki alakasız şehirleri (İzmir, Ankara, Gaziantep, Adana, Samsun, Yozgat, Ordu vb.),
     kıdemli / şantiye pozisyonlarını, YEDAŞ gibi bölgesel firmaları,
-    Türkiye Geneli gibi çoklu şehir ilanlarını ve sahte/ölü OSB Rehberi kalıntılarını tamamen temizler.
+    Türkiye Geneli gibi çoklu şehir ilanlarını, sahte/ölü OSB Rehberi kalıntılarını ve
+    MIN_RELEVANCE_SCORE (50) barajının altındaki tüm kayıtları temizler.
     Sadece Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe / Muratlı sanayi havzasına ait
     öğrenci ve İME stajyer fırsatlarını bırakır.
     """
@@ -63,11 +64,11 @@ def purge_invalid_leads(db_path: str = DB_PATH) -> int:
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             DELETE FROM leads
             WHERE source LIKE 'OSB Rehberi%'
                OR is_active = 0
-               OR relevance_score < 30
+               OR relevance_score < {MIN_RELEVANCE_SCORE}
                OR LOWER(title) LIKE '%şantiye%'
                OR LOWER(title) LIKE '%müdür%'
                OR LOWER(title) LIKE '%kıdemli%'
@@ -129,6 +130,8 @@ def purge_invalid_leads(db_path: str = DB_PATH) -> int:
                OR LOWER(location) LIKE '%bursa%'
                OR LOWER(location) LIKE '%antalya%'
                OR LOWER(location) LIKE '%trabzon%'
+               OR LOWER(location) LIKE '%yozgat%'
+               OR LOWER(location) LIKE '%ordu%'
             """
         )
         purged = cursor.rowcount
@@ -194,6 +197,29 @@ def init_db(db_path: str = DB_PATH) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(source)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_active ON leads(is_active)")
 
+        # Reddedilen URL'ler tablosu (Ölü linkler, alakasız şehirler, Yozgat/Ordu sızıntıları)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rejected_urls (
+                url TEXT PRIMARY KEY,
+                reason TEXT,
+                rejected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rejected_urls_time ON rejected_urls(rejected_at)")
+
+        # İzlenen Şirketler / Kariyer Sayfaları Tablosu
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS watched_companies (
+                company TEXT NOT NULL,
+                url TEXT PRIMARY KEY,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
         # Bot meta verileri (Son tarama zamanı vb.)
         cursor.execute(
             """
@@ -210,6 +236,75 @@ def init_db(db_path: str = DB_PATH) -> None:
         purge_invalid_leads(db_path)
     except Exception as e:
         print(f"[UYARI] Otomatik lead temizliği geçici hata: {e}")
+
+
+def add_rejected_url(url: str, reason: str = "", db_path: str = DB_PATH) -> bool:
+    """Reddedilen / elenen URL'i ve sebebini veritabanına kaydeder."""
+    clean_url = url.strip()
+    if not clean_url:
+        return False
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO rejected_urls (url, reason, rejected_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(url) DO UPDATE SET reason = excluded.reason, rejected_at = CURRENT_TIMESTAMP
+            """,
+            (clean_url, reason)
+        )
+        conn.commit()
+        return True
+
+
+def is_url_rejected(url: str, db_path: str = DB_PATH) -> bool:
+    """Verilen URL'in daha önce elenip elenmediğini kontrol eder."""
+    clean_url = url.strip()
+    if not clean_url:
+        return False
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM rejected_urls WHERE url = ?", (clean_url,))
+        return cursor.fetchone() is not None
+
+
+def get_recent_rejected_urls(limit: int = 15, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Son elenen ilanları ve ret sebeplerini listeler."""
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT url, reason, rejected_at FROM rejected_urls ORDER BY rejected_at DESC LIMIT ?",
+            (limit,)
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def add_watched_company(company: str, url: str, db_path: str = DB_PATH) -> bool:
+    """İzlenecek fabrika/şirket kariyer sayfasını ekler."""
+    clean_company = company.strip()
+    clean_url = url.strip()
+    if not clean_company or not clean_url:
+        return False
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO watched_companies (company, url, added_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(url) DO UPDATE SET company = excluded.company, added_at = CURRENT_TIMESTAMP
+            """,
+            (clean_company, clean_url)
+        )
+        conn.commit()
+        return True
+
+
+def get_watched_companies(db_path: str = DB_PATH) -> List[Dict[str, str]]:
+    """İzlenen tüm şirket ve kariyer sayfalarını döndürür."""
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT company, url, added_at FROM watched_companies ORDER BY added_at DESC")
+        return [dict(r) for r in cursor.fetchall()]
 
 
 def get_last_scan_time(db_path: str = DB_PATH) -> str:
@@ -236,11 +331,12 @@ def set_last_scan_time(scan_time_str: Optional[str] = None, db_path: str = DB_PA
         conn.commit()
 
 
-def delete_or_deactivate_dead_link(url: str, db_path: str = DB_PATH) -> bool:
-    """Ölü link (404, 500 veya kapanmış ilan) tespit edildiğinde veritabanından deaktif eder / siler."""
+def delete_or_deactivate_dead_link(url: str, reason: str = "Ölü / Geçersiz Link", db_path: str = DB_PATH) -> bool:
+    """Ölü link (404, 500 veya kapanmış ilan) tespit edildiğinde veritabanından deaktif eder ve reddedilenlere ekler."""
     clean_url = url.strip()
     if not clean_url:
         return False
+    add_rejected_url(clean_url, reason, db_path=db_path)
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE leads SET is_active = 0 WHERE url = ?", (clean_url,))
@@ -255,7 +351,7 @@ def get_regional_breakdown(db_path: str = DB_PATH) -> Dict[str, int]:
     """
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT location FROM leads WHERE is_active = 1 AND relevance_score >= 30")
+        cursor.execute("SELECT location FROM leads WHERE is_active = 1 AND relevance_score >= ?", (MIN_RELEVANCE_SCORE,))
         rows = cursor.fetchall()
 
     counts = {
@@ -310,33 +406,39 @@ def upsert_lead(
     db_path: str = DB_PATH,
 ) -> Tuple[bool, str]:
     """
-    İlanı veritabanına ekler veya günceller (Append/Update mantığı).
-    
-    Skor belirtilmemişse dinamik ve güncel E-E algoritmasıyla otomatik hesaplar.
-    Alakasız ilanları (relevance_score <= 0) veritabanına almaz.
+    İlanı veritabanına ekler veya günceller (v2.1 Sıfır Hata Mimarisi):
+    1. is_url_rejected(url) kontrolü: Daha önce elenen URL'leri asla tekrar almaz.
+    2. Katı Lokasyon Doğrulaması: DOM/API lokasyonunu validate_strict_location ile test eder.
+       Başarısızsa rejected_urls tablosuna kaydeder.
+    3. Uygunluk Skoru: MIN_RELEVANCE_SCORE (50) altındaki ilanlar reddedilir ve rejected_urls'e yazılır.
     """
     clean_url = url.strip()
     if not clean_url:
         return False, "ignored"
 
+    # 1. Daha önce elenmiş URL kontrolü
+    if is_url_rejected(clean_url, db_path=db_path):
+        return False, "previously_rejected"
+
     clean_company = company.strip()
     clean_title = title.strip()
-    clean_location = location.strip() if location else "Tekirdağ"
+    clean_location = location.strip() if location else ""
     clean_source = source.strip()
     clean_notes = notes.strip() if notes else ""
 
-    # Katı Beyaz Liste (Strict Whitelist) Doğrulaması (OSB Rehberi hedefleri hariç)
-    if "OSB Rehberi" not in clean_source:
-        from config import validate_strict_location
-        is_valid_loc, loc_reason = validate_strict_location(
-            raw_location=clean_location,
-            title=clean_title,
-            company=clean_company
-        )
-        if not is_valid_loc:
-            return False, f"ignored: {loc_reason}"
+    # 2. Katı Beyaz Liste (Strict Whitelist) Doğrulaması
+    from config import validate_strict_location
+    is_valid_loc, loc_reason = validate_strict_location(
+        raw_location=clean_location,
+        title=clean_title,
+        company=clean_company,
+        body_text=clean_notes
+    )
+    if not is_valid_loc:
+        add_rejected_url(clean_url, f"Lokasyon Reddi: {loc_reason}", db_path=db_path)
+        return False, f"ignored: {loc_reason}"
 
-    # Skoru güncel ve hassas hesapla
+    # 3. Skoru güncel ve hassas hesapla
     if relevance_score is None or relevance_score <= 0:
         score = calculate_relevance_score(
             title=clean_title,
@@ -349,9 +451,10 @@ def upsert_lead(
     else:
         score = relevance_score
 
-    # Kesinlikle alakasız meslekleri (İK, emlak, muhasebe vb.) veritabanına kaydetme
-    if score <= 0:
-        return False, "ignored"
+    # 4. Asgari Uygunluk Skoru Kontrolü (MIN_RELEVANCE_SCORE = 50)
+    if score < MIN_RELEVANCE_SCORE:
+        add_rejected_url(clean_url, f"Düşük Skor ({score} < {MIN_RELEVANCE_SCORE})", db_path=db_path)
+        return False, "ignored_low_score"
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -442,7 +545,7 @@ def insert_lead(
 
 def get_leads(
     status: Optional[str] = None,
-    min_score: int = 15,
+    min_score: int = MIN_RELEVANCE_SCORE,
     order_by: str = "score",
     limit: int = 100,
     db_path: str = DB_PATH,
@@ -470,14 +573,8 @@ def get_leads(
 
 def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
     """
-    Kullanıcının talep ettiği adette (10, 25, 50, 100 vb.) en güncel çalışan ve
+    Kullanıcının talep ettiği adette en güncel çalışan ve
     TNKÜ E-E İME profiline en uygun ilanları kusursuz sıralamayla çeker.
-    
-    Sıralama ve Filtreleme Kriterleri:
-    - Kesinlikle sadece Tekirdağ / Çorlu / Çerkezköy / Ergene / Velimeşe / Muratlı sanayi havzası
-    - İzmir, Ankara, Gaziantep, Samsun, Esenyurt vb. uzak şehirler SQL seviyesinde KESİNLİKLE ENGELLENİR.
-    - Kıdemli, şantiye şefi, müdür ve stajyer/öğrenci dışı ilanlar elenir.
-    - Bel Karper, Zorluteks, Dinarsu, GF Hakan, EAE Elektrik gibi 1. sınıf OSB İME fırsatları önceliklidir.
     """
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -485,7 +582,7 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
             """
             SELECT * FROM leads
             WHERE is_active = 1
-              AND relevance_score >= 30
+              AND relevance_score >= ?
               AND LOWER(company) NOT LIKE '%dh teknik%'
               AND LOWER(company) NOT LIKE '%şara%'
               AND LOWER(company) NOT LIKE '%sara%'
@@ -533,6 +630,8 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
               AND LOWER(location) NOT LIKE '%samsun%'
               AND LOWER(location) NOT LIKE '%adana%'
               AND LOWER(location) NOT LIKE '%esenyurt%'
+              AND LOWER(location) NOT LIKE '%yozgat%'
+              AND LOWER(location) NOT LIKE '%ordu%'
               AND LOWER(location) NOT LIKE '%türkiye geneli%'
               AND LOWER(location) NOT LIKE '%turkiye geneli%'
               AND LOWER(location) NOT LIKE '%tüm şehirler%'
@@ -540,7 +639,7 @@ def get_ranked_leads(limit: int = 50, db_path: str = DB_PATH) -> List[Dict[str, 
             ORDER BY relevance_score DESC, created_at DESC
             LIMIT ?
             """,
-            (limit,)
+            (MIN_RELEVANCE_SCORE, limit)
         )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
@@ -592,16 +691,25 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
     """Sistemdeki toplam doğrulanmış yerel ilan ve başvuru istatistiklerini hesaplar."""
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
+        cursor.execute("SELECT COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= ?", (MIN_RELEVANCE_SCORE,))
         total = cursor.fetchone()[0]
 
-        cursor.execute("SELECT status, COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= 30 GROUP BY status")
+        cursor.execute(
+            "SELECT status, COUNT(*) FROM leads WHERE is_active = 1 AND relevance_score >= ? GROUP BY status",
+            (MIN_RELEVANCE_SCORE,)
+        )
         by_status = dict(cursor.fetchall())
 
-        cursor.execute("SELECT AVG(relevance_score) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
+        cursor.execute(
+            "SELECT AVG(relevance_score) FROM leads WHERE is_active = 1 AND relevance_score >= ?",
+            (MIN_RELEVANCE_SCORE,)
+        )
         avg_score = cursor.fetchone()[0] or 0.0
 
-        cursor.execute("SELECT COUNT(DISTINCT company) FROM leads WHERE is_active = 1 AND relevance_score >= 30")
+        cursor.execute(
+            "SELECT COUNT(DISTINCT company) FROM leads WHERE is_active = 1 AND relevance_score >= ?",
+            (MIN_RELEVANCE_SCORE,)
+        )
         unique_companies = cursor.fetchone()[0]
 
         # Son 24 saat içinde eklenen taze ilan sayısı
@@ -609,9 +717,10 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
             """
             SELECT COUNT(*) FROM leads
             WHERE is_active = 1
-              AND relevance_score >= 30
+              AND relevance_score >= ?
               AND (julianday('now') - julianday(created_at)) <= 1.0
-            """
+            """,
+            (MIN_RELEVANCE_SCORE,)
         )
         recent_24h_count = cursor.fetchone()[0] or 0
 
@@ -620,10 +729,11 @@ def get_statistics(db_path: str = DB_PATH) -> Dict[str, Any]:
             """
             SELECT COUNT(*) FROM leads
             WHERE is_active = 1
-              AND relevance_score >= 30
+              AND relevance_score >= ?
               AND source NOT LIKE 'OSB Rehberi%'
               AND (julianday('now') - julianday(created_at)) <= 3.0
-            """
+            """,
+            (MIN_RELEVANCE_SCORE,)
         )
         new_recent_count = cursor.fetchone()[0] or 0
 

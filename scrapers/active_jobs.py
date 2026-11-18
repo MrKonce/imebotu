@@ -18,9 +18,11 @@ from config import (
     SEARCH_TERMS,
     USER_AGENT,
     REQUEST_TIMEOUT,
+    MIN_RELEVANCE_SCORE,
     calculate_relevance_score,
     validate_strict_location,
 )
+from database import add_rejected_url, is_url_rejected
 
 
 def scrape_cosb_portal() -> List[Dict[str, Any]]:
@@ -104,6 +106,7 @@ def scrape_search_results_http(query: str) -> List[Dict[str, Any]]:
     """
     HTTP istekleri (requests + bs4) ile arama motoru ve kariyer sayfalarından
     açık iş ilanlarını ve duyuruları çeker.
+    Sıfır Hata (v2.1): Otomatik Tekirdağ fallback'i asla uygulanmaz; katı lokasyon kontrol edilir.
     """
     results: List[Dict[str, Any]] = []
     encoded_query = urllib.parse.quote(query)
@@ -141,8 +144,9 @@ def scrape_search_results_http(query: str) -> List[Dict[str, Any]]:
                 if not parsed_link.startswith("http"):
                     continue
 
-                combined_text = f"{title} {snippet}".lower()
-                
+                if is_url_rejected(parsed_link):
+                    continue
+
                 company = "Belirtilmemiş"
                 if " - " in title:
                     parts = title.split(" - ")
@@ -155,13 +159,15 @@ def scrape_search_results_http(query: str) -> List[Dict[str, Any]]:
                     company = domain
 
                 # Katı Beyaz Liste (Strict Whitelist) ve Blacklist Doğrulaması
-                # Asla 'Tekirdağ Bölgesi' tahmini yapılmaz; doğrudan metindeki gerçek lokasyon doğrulanır.
+                # Asla otomatik lokasyon ataması yapılmaz; snippet ve başlıktan doğrulanır.
                 is_valid, matched_or_reason = validate_strict_location(
                     raw_location=f"{title} {snippet}",
                     title=title,
-                    company=company
+                    company=company,
+                    body_text=snippet
                 )
                 if not is_valid:
+                    add_rejected_url(parsed_link, f"Arama Lokasyon Reddi: {matched_or_reason}")
                     continue
 
                 real_loc_name = f"Tekirdağ / {matched_or_reason.capitalize()}" if matched_or_reason != "tekirdag" else "Tekirdağ"
@@ -173,18 +179,21 @@ def scrape_search_results_http(query: str) -> List[Dict[str, Any]]:
                     company=company
                 )
 
-                if score >= 30:
-                    results.append(
-                        {
-                            "company": company,
-                            "title": title,
-                            "location": real_loc_name,
-                            "url": parsed_link,
-                            "source": "Web / İş Arama",
-                            "relevance_score": score,
-                            "snippet": snippet,
-                        }
-                    )
+                if score < MIN_RELEVANCE_SCORE:
+                    add_rejected_url(parsed_link, f"Arama Düşük Skor ({score} < {MIN_RELEVANCE_SCORE})")
+                    continue
+
+                results.append(
+                    {
+                        "company": company,
+                        "title": title,
+                        "location": real_loc_name,
+                        "url": parsed_link,
+                        "source": "Web / İş Arama",
+                        "relevance_score": score,
+                        "snippet": snippet,
+                    }
+                )
 
     except Exception as e:
         print(f"[UYARI] HTTP Arama Hatası ({query}): {str(e)}")
@@ -245,7 +254,7 @@ def scrape_with_playwright(query: str) -> List[Dict[str, Any]]:
                         source="Indeed / Canlı İlan",
                         company=company
                     )
-                    if score >= 30 and link:
+                    if score >= MIN_RELEVANCE_SCORE and link:
                         results.append(
                             {
                                 "company": company,
@@ -266,10 +275,9 @@ def scrape_with_playwright(query: str) -> List[Dict[str, Any]]:
     return results
 
 
-def fetch_all_active_jobs(max_queries: int = 5, use_playwright: bool = False) -> List[Dict[str, Any]]:
+def fetch_all_active_jobs(max_queries: int = 6, use_playwright: bool = False) -> List[Dict[str, Any]]:
     """
-    ÇOSB İstihdam Portalı ve arama kombinasyonları ile
-    tüm aktif ilanları tarar ve mükerrer URL'leri filtreler.
+    Hedefe yönelik kurumsal ATS ve kariyer sayfası sorguları ile aktif ilanları tarar.
     """
     all_jobs: Dict[str, Dict[str, Any]] = {}
     
@@ -282,22 +290,25 @@ def fetch_all_active_jobs(max_queries: int = 5, use_playwright: bool = False) ->
             all_jobs[url] = job
     print(f"    -> {len(cosb_jobs)} açık ÇOSB ilanı tespit edildi.")
 
-    # 2. Öncelikli sorgu kombinasyonları oluştur
-    search_combinations = [
-        f"{kw} {loc}"
-        for kw in ["staj", "stajyer", "İME", "elektrik"]
-        for loc in ["Çorlu", "Çerkezköy", "Tekirdağ", "Ergene"]
+    # 2. Kurumsal ATS ve Hedef Kariyer Sorguları (ADIM 4)
+    target_queries = [
+        'site:jobs.lever.co "Tekirdağ" (elektrik OR otomasyon OR stajyer)',
+        'site:greenhouse.io "Tekirdağ" (elektrik OR otomasyon OR stajyer)',
+        'site:kariyer.net/is-ilani/ "Tekirdağ" (stajyer OR "aday mühendis")',
+        'site:kariyer.net/is-ilani/ "Çorlu" (stajyer OR "aday mühendis")',
+        'site:kariyer.net/is-ilani/ "Çerkezköy" (stajyer OR "aday mühendis")',
+        '"Tekirdağ" ("elektrik mühendisi stajyer" OR "aday mühendis" OR "işletmede mesleki eğitim")',
+        '"Çorlu" ("elektrik stajyer" OR "otomasyon stajyer" OR "işletmede mesleki eğitim")',
+        '"Çerkezköy" ("elektrik stajyer" OR "otomasyon stajyer" OR "aday mühendis")',
     ]
 
-    selected_queries = search_combinations[:max_queries]
-    print(f"[*] Toplam {len(selected_queries)} hedef canlı arama sorgusu çalıştırılıyor...")
+    selected_queries = target_queries[:max_queries]
+    print(f"[*] Toplam {len(selected_queries)} hedef ATS ve portal araması çalıştırılıyor...")
 
     for query in selected_queries:
         print(f"    -> Taranıyor: '{query}'")
-        
         found = scrape_search_results_http(query)
-        
-        # Playwright desteği (kullanıcı seçeneği veya HTTP boş döndüğünde)
+
         if (use_playwright or len(all_jobs) < 3) and len(found) == 0:
             pw_found = scrape_with_playwright(query)
             found.extend(pw_found)

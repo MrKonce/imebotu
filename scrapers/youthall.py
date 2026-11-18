@@ -18,9 +18,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from config import (
     USER_AGENT,
     REQUEST_TIMEOUT,
+    MIN_RELEVANCE_SCORE,
     calculate_relevance_score,
     validate_strict_location,
 )
+from database import add_rejected_url, is_url_rejected
 
 YOUTHALL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -67,6 +69,9 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                     continue
                 seen_urls.add(full_url)
 
+                if is_url_rejected(full_url):
+                    continue
+
                 # Ana Lokasyon HTML Etiketi Kontrolü (map-marker içeren tag)
                 primary_location = ""
                 tags = card.find_all("div", class_="jobs-tag")
@@ -75,8 +80,6 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                         primary_location = tag.get_text(strip=True)
                         break
 
-                # Eğer liste kartında lokasyon etiketi yoksa veya Tekirdağ değilse detay sayfasına bak veya kontrol et
-                # 3. Kural: SADECE sitenin ana lokasyon HTML etiketini kontrol et!
                 card_title_el = card.find("div", class_="jobs-content-title")
                 card_title = card_title_el.get_text(strip=True) if card_title_el else ""
 
@@ -107,12 +110,9 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                         if comp_div and comp_div.get_text(strip=True):
                             real_company = comp_div.get_text(strip=True)
 
-                        # Detay sayfasındaki lokasyon
-                        # Eğer karttaki lokasyon boşsa başlık ve meta'dan doğrula
                         if not real_loc:
                             meta_desc = dsoup.find("meta", property="og:description")
                             desc_content = meta_desc.get("content", "") if meta_desc else ""
-                            # Eğer lokasyon etiketinde yoksa ama başlıkta Tekirdağ varsa
                             if "tekirdağ" in real_title.lower() or "çorlu" in real_title.lower() or "çerkezköy" in real_title.lower():
                                 real_loc = "Tekirdağ"
                 except Exception:
@@ -121,7 +121,7 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                 if not real_loc:
                     continue
 
-                # 3. Kural: Katı Beyaz Liste ve Blacklist Kontrolü (Sadece Ana Lokasyon)
+                # Katı Beyaz Liste ve Blacklist Kontrolü (Sadece Ana Lokasyon)
                 is_valid, matched_or_reason = validate_strict_location(
                     raw_location=real_loc,
                     title=real_title,
@@ -129,6 +129,7 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                 )
 
                 if not is_valid:
+                    add_rejected_url(full_url, f"Youthall Lokasyon Reddi: {matched_or_reason}")
                     continue
 
                 # Uygunluk skoru
@@ -140,6 +141,10 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                     company=real_company
                 )
 
+                if score < MIN_RELEVANCE_SCORE:
+                    add_rejected_url(full_url, f"Youthall Düşük Skor ({score} < {MIN_RELEVANCE_SCORE})")
+                    continue
+
                 clean_loc = f"Tekirdağ / {matched_or_reason.capitalize()}" if matched_or_reason != "tekirdag" else "Tekirdağ"
 
                 results.append({
@@ -148,7 +153,7 @@ def fetch_youthall_jobs() -> List[Dict[str, Any]]:
                     "location": clean_loc,
                     "url": full_url,
                     "source": "Youthall",
-                    "relevance_score": max(50, score),
+                    "relevance_score": score,
                     "notes": f"Youthall Staj & Kariyer İlanı - {real_company} ({clean_loc})",
                 })
 

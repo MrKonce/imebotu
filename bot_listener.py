@@ -25,6 +25,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     SCAN_INTERVAL_HOURS,
+    MIN_RELEVANCE_SCORE,
     PORT,
 )
 import database
@@ -100,22 +101,33 @@ DEAD_PHRASES = [
     "ilan yayindan kaldirilmistir",
     "ilan yayından kalkmıştır",
     "ilan yayindan kalkmistir",
+    "ilanın yayım süresi sona ermiştir",
+    "ilanin yayim suresi sona ermistir",
+    "bu ilanın yayın süresi dolmuştur",
+    "bu ilanin yayin suresi dolmustur",
+    "bu ilan süresi dolmuştur",
+    "bu ilan suresi dolmustur",
+    "başvuru süresi dolmuştur",
+    "basvuru suresi dolmustur",
+    "ilan artık aktif değil",
+    "ilan artik aktif degil",
+    "ilan kapandı",
+    "ilan kapandi",
+    "bu pozisyon için artık başvuru kabul edilmemektedir",
+    "artık başvuru kabul edilmemektedir",
+    "artik basvuru kabul edilmemektedir",
+    "böyle bir ilan bulunamadı",
+    "boyle bir ilan bulunamadi",
     "bu sayfa bulunamadı",
     "bu sayfa bulunamadi",
     "sayfa bulunamadı",
     "sayfa bulunamadi",
+    "ilan bulunamadı",
+    "ilan bulunamadi",
     "no longer available",
     "job is closed",
     "job has expired",
-    "bu ilan süresi dolmuştur",
-    "bu ilanın yayın süresi dolmuştur",
-    "bu ilanin yayin suresi dolmustur",
-    "ilanın yayım süresi sona ermiştir",
-    "ilanin yayim suresi sona ermistir",
-    "ilan artık aktif değil",
-    "ilan artik aktif degil",
-    "ilan bulunamadı",
-    "ilan bulunamadi",
+    "position has been filled",
     "arama kriterlerinize uygun ilan bulunamadı",
     "404 not found",
     "page not found",
@@ -139,18 +151,36 @@ def clean_tokens_for_check(text: str, noise_set: set) -> List[str]:
     return [t.strip() for t in cleaned.split() if len(t.strip()) >= 3 and t.strip() not in noise_set]
 
 
-def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", timeout: int = 7) -> tuple[bool, str]:
+def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", timeout: int = 10) -> tuple[bool, str]:
     """
-    Kullanıcının 2. Kuralı: Agresif Ölü ve Sahte Link Kontrolü (Bel Karper / Zorluteks Sorunu)
-    Sadece HTTP 200 dönmesi yetmez:
-    1. HTTP yanıt kodu 200 OK olmalıdır (404, 500, 403 vb. doğrudan ELENİR).
-    2. Sitenin ana sayfasına veya login sayfasına yönlendirilen (redirect) linkler ELENİR.
-    3. Sayfa içeriğinde ölü ilan ibareleri ('ilan yayından kaldırılmıştır' vb.) varsa ELENİR.
-    4. Sayfa DOM ağacında şirket adı veya ilan başlığı anahtar kelimeleri yoksa (HAYALET İLAN) ELENİR.
+    Kullanıcının 2. ve 3. Kuralı: Agresif Ölü, Sahte Link ve Kategori/Arama Sayfası Doğrulayıcı.
+    1. Arama / Toplayıcı kategori sayfaları (kariyer.net/is-ilanlari, eleman.net/is-ilanlari, jooble vb.) KESİNLİKLE ELENİR.
+    2. HTTP yanıt kodu 200 OK olmalıdır (404, 500, 403 vb. doğrudan ELENİR).
+    3. Sitenin ana sayfasına veya login sayfasına yönlendirilen (redirect) linkler ELENİR.
+    4. Sayfa içeriğinde ölü ilan ibareleri ('ilan yayından kaldırılmıştır' vb.) varsa ELENİR.
+    5. Sayfa DOM ağacında şirket adı veya ilan başlığı anahtar kelimeleri yoksa (HAYALET İLAN) ELENİR.
+    6. Tüm ret durumları database.add_rejected_url ile kaydedilir.
     """
     clean_url = (url or "").strip()
     if not clean_url or not clean_url.startswith("http"):
         return False, "Geçersiz URL formatı"
+
+    parsed_in = urllib.parse.urlparse(clean_url)
+    netloc_in = parsed_in.netloc.lower()
+    path_in = parsed_in.path.lower()
+
+    # 1. Arama / Aggregator Kategori Listesi Sayfalarını Kesinlikle Engelle (ADIM 3)
+    if "kariyer.net" in netloc_in and ("/is-ilanlari" in path_in and "/is-ilani/" not in path_in):
+        database.add_rejected_url(clean_url, "Toplu Arama / Kategori Sayfası (Kariyer.net)")
+        return False, "Toplu Arama / Kategori Sayfası (Kariyer.net)"
+
+    if "eleman.net" in netloc_in and ("/is-ilanlari" in path_in and "/is-ilani/" not in path_in):
+        database.add_rejected_url(clean_url, "Toplu Arama / Kategori Sayfası (Eleman.net)")
+        return False, "Toplu Arama / Kategori Sayfası (Eleman.net)"
+
+    if any(agg in netloc_in for agg in ["jooble.org", "iskur.gov.tr", "indeed.com"]) and not any(k in path_in for k in ["/viewjob", "/job/", "/ilan/", "/detay/"]):
+        database.add_rejected_url(clean_url, f"Toplu İlan Havuzu Sayfası ({netloc_in})")
+        return False, f"Toplu İlan Havuzu Sayfası ({netloc_in})"
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -168,11 +198,13 @@ def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", ti
             stream=False
         )
         if resp.status_code != 200:
+            database.add_rejected_url(clean_url, f"HTTP {resp.status_code}")
             return False, f"HTTP {resp.status_code}"
 
         final_parsed = urllib.parse.urlparse(resp.url)
         path = final_parsed.path.rstrip("/")
         if path in ["", "/tr", "/en", "/anasayfa", "/index.html", "/index.php", "/home", "/login", "/giris", "/tr/youth/login"]:
+            database.add_rejected_url(clean_url, f"Ana sayfaya / login sayfasına yönlendirildi ({resp.url})")
             return False, f"Ana sayfaya / login sayfasına yönlendirildi ({resp.url})"
 
         html_text = resp.text.lower()
@@ -180,27 +212,33 @@ def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", ti
         # Ölü ilan ibareleri kontrolü
         for phrase in DEAD_PHRASES:
             if phrase in html_text:
+                database.add_rejected_url(clean_url, f"İlan yayından kaldırılmış ({phrase})")
                 return False, f"İlan yayından kaldırılmış ({phrase})"
 
         # DOM kontrolü: Şirket Adı
         if company:
             comp_tokens = clean_tokens_for_check(company, COMPANY_NOISE)
             if comp_tokens and not any(t in html_text for t in comp_tokens):
+                database.add_rejected_url(clean_url, f"Şirket ('{company}') DOM ağacında bulunamadı (Hayalet İlan)")
                 return False, f"Şirket ('{company}') DOM ağacında bulunamadı (Hayalet İlan)"
 
         # DOM kontrolü: İlan Başlığı
         if title:
             title_tokens = clean_tokens_for_check(title, TITLE_NOISE)
             if title_tokens and not any(t in html_text for t in title_tokens):
+                database.add_rejected_url(clean_url, f"İlan başlığı ('{title}') DOM ağacında bulunamadı (Hayalet İlan)")
                 return False, f"İlan başlığı ('{title}') DOM ağacında bulunamadı (Hayalet İlan)"
 
         return True, "200 OK & Doğrulandı"
 
     except requests.exceptions.Timeout:
+        database.add_rejected_url(clean_url, "Bağlantı zaman aşımı (Timeout)")
         return False, "Bağlantı zaman aşımı (Timeout)"
     except requests.exceptions.SSLError as e:
+        database.add_rejected_url(clean_url, f"SSL Hatası ({type(e).__name__})")
         return False, f"SSL Hatası ({type(e).__name__})"
     except Exception as e:
+        database.add_rejected_url(clean_url, f"Ağ Hatası ({type(e).__name__})")
         return False, f"Ağ Hatası ({type(e).__name__})"
 
 
@@ -294,7 +332,7 @@ def background_scanner_worker(notifier: TelegramNotifier, interval_hours: int = 
                 )
                 if is_new:
                     new_count += 1
-                    if job.get("relevance_score", 0) >= 30 and new_count <= 6:
+                    if job.get("relevance_score", 0) >= MIN_RELEVANCE_SCORE and new_count <= 6:
                         notifier.send_lead_notification(job)
                         time.sleep(0.3)
 
@@ -479,7 +517,8 @@ class TelegramBotListener:
             f"📊 <b>Sistemdeki Toplam Aktif İlan Sayısı:</b> {stats['total_leads']}\n\n"
             f"🆕 <b>Son 24 Saatte Eklenen Yeni İlan:</b> {stats.get('recent_24h_leads', 0)}\n\n"
             f"📍 <b>Bölgesel Dağılım (Özet):</b>\n{regional_str}\n\n"
-            "💡 <i>Detaylı liste için <b>Tüm İlanlar</b> veya <b>İlk 20</b> seçeneklerini kullanabilirsiniz.</i>"
+            "💡 <i>Detaylı liste için <b>Tüm İlanlar</b> veya <b>İlk 20</b> butonlarını kullanabilirsiniz.\n"
+            "Elenen ilanları görmek için <b>/elenenler</b>, yeni fabrika kariyer sayfası eklemek için <b>/sirket_ekle ŞirketAdı URL</b> yazabilirsiniz.</i>"
         )
         self.send_message(msg, reply_markup=get_control_panel_keyboard())
 
@@ -593,6 +632,35 @@ class TelegramBotListener:
             self.handle_scan()
         elif clean_text in ["/durum", "/rapor", "durum", "rapor", "/stats", "istatistik", "/menu", "/panel", "/start", "/help", "menu", "panel", "yardım"]:
             self.handle_status()
+        elif clean_text in ["/elenenler", "elenenler", "/ret", "retler", "/red"]:
+            rejected = database.get_recent_rejected_urls(limit=15)
+            if not rejected:
+                self.send_message("ℹ️ Şu ana kadar elenen veya reddedilen kayıt bulunmuyor.")
+            else:
+                msg = "🚫 <b>Son Elenen / Reddedilen 15 İlan ve Nedenleri:</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                for idx, r in enumerate(rejected, 1):
+                    url_display = r['url']
+                    if len(url_display) > 50:
+                        url_display = url_display[:47] + "..."
+                    msg += f"{idx}. 🔗 <code>{url_display}</code>\n   ❌ <b>Sebep:</b> {r['reason']}\n\n"
+                self.send_message(msg)
+        elif clean_text.startswith("/sirket_ekle") or clean_text.startswith("şirket ekle") or clean_text.startswith("sirket ekle"):
+            parts = text.strip().split(maxsplit=2)
+            if len(parts) >= 3 and parts[2].startswith("http"):
+                company_name = parts[1]
+                career_url = parts[2]
+                database.add_watched_company(company_name, career_url)
+                self.send_message(
+                    f"✅ <b>Fabrika / Kariyer Sayfası İzlemeye Alındı!</b>\n"
+                    f"🏢 <b>Şirket:</b> {company_name}\n"
+                    f"🔗 <b>URL:</b> {career_url}\n"
+                    f"Bu sayfa bir sonraki canlı taramada kontrol edilecektir."
+                )
+            else:
+                self.send_message(
+                    "ℹ️ <b>Kullanım:</b> <code>/sirket_ekle ŞirketAdı KariyerURL</code>\n"
+                    "Örnek: <code>/sirket_ekle Arçelik https://careers.arcelik.com/jobs</code>"
+                )
         elif clean_text in ["/temizle", "temizle", "/sifirla", "sıfırla", "sifirla", "temizle botu", "/flush", "flush"]:
             purged = database.purge_invalid_leads()
             self.send_message(
