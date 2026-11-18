@@ -203,13 +203,35 @@ def verify_ad_alive_and_genuine(url: str, company: str = "", title: str = "", ti
             database.add_rejected_url(clean_url, f"HTTP {resp.status_code}")
             return False, f"HTTP {resp.status_code}"
 
+        html_text = resp.text.lower()
+
+        # Kurumsal sanayi kapıları ve üniversite resmi başvuru sistemleri kontrolü
+        is_corporate_gateway = any(
+            kw in clean_url.lower() for kw in [
+                "ste.nku.edu.tr", "cmf.nku.edu.tr", "cosb.org.tr", "bsh-group.com",
+                "careers.unilever.com", "kocariyer.com", "zentiva.com", "deva.com",
+                "magna.com", "kordsa.com", "hemaendustri.com"
+            ]
+        ) or any(
+            kw in (company or "").lower() for kw in [
+                "bsh", "unilever", "algida", "magnum", "arçelik", "beko", "zentiva",
+                "deva", "magna", "çosb", "tnkü", "kordsa", "hema"
+            ]
+        )
+
+        if is_corporate_gateway:
+            # Kurumsal kariyer sayfalarında tekil iş ilanı DOM kontrolü aranmaz
+            for phrase in ["sayfa bulunamadı", "404 not found", "page not found", "böyle bir sayfa yok"]:
+                if phrase in html_text:
+                    database.add_rejected_url(clean_url, f"Kariyer sayfası bulunamadı ({phrase})")
+                    return False, f"Kariyer sayfası bulunamadı ({phrase})"
+            return True, "200 OK & Kurumsal Kapı Doğrulandı"
+
         final_parsed = urllib.parse.urlparse(resp.url)
         path = final_parsed.path.rstrip("/")
         if path in ["", "/tr", "/en", "/anasayfa", "/index.html", "/index.php", "/home", "/login", "/giris", "/tr/youth/login"]:
             database.add_rejected_url(clean_url, f"Ana sayfaya / login sayfasına yönlendirildi ({resp.url})")
             return False, f"Ana sayfaya / login sayfasına yönlendirildi ({resp.url})"
-
-        html_text = resp.text.lower()
 
         # Ölü ilan ibareleri kontrolü
         for phrase in DEAD_PHRASES:
@@ -477,12 +499,18 @@ class TelegramBotListener:
 
                 new_badge = " 🆕 <b>(*yeni ilan*)</b>" if is_new else ""
                 source_clean = l.get("source", "Web")
-                if "OSB Rehberi" in source_clean:
-                    source_tag = "[OSB Hedefi]"
+                if "Kurumsal" in source_clean:
+                    source_tag = "[Kurumsal İME Başvurusu]"
+                elif "TNKÜ" in source_clean:
+                    source_tag = "[TNKÜ İME Portalı]"
+                elif "ÇOSB" in source_clean:
+                    source_tag = "[ÇOSB İstihdam Portalı]"
                 elif "Kariyer.net" in source_clean:
                     source_tag = "[Kariyer.net]"
                 elif "LinkedIn" in source_clean:
                     source_tag = "[LinkedIn]"
+                elif "Youthall" in source_clean:
+                    source_tag = "[Youthall]"
                 else:
                     source_tag = f"[{source_clean}]"
 

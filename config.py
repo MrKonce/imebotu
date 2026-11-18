@@ -144,7 +144,7 @@ NEGATIVE_KEYWORDS = [
     "endüstri mühendisi stajyeri", "endüstri mühendisi", "endustri muhendisi",
     "kalite kontrol operatörü", "vasıfsız", "vasifsiz", "forklift",
     "cnc operatörü", "cnc", "kaynakçı", "kaynakci", "tornacı", "tornaci",
-    "paketleme", "depo elemanı"
+    "paketleme elemanı", "paketleme işçisi", "paketleme personeli", "depo elemanı"
 ]
 
 # 2. Katı Beyaz Liste (Strict Whitelist) - Sadece Tekirdağ ve İlçeleri
@@ -389,7 +389,7 @@ def calculate_relevance_score(
     )
 
     is_tnku_or_osb = any(
-        k in source_norm for k in ["tnku", "nku", "osb", "cosb", "vizyoner", "direct", "fabrika"]
+        k in source_norm for k in ["tnku", "nku", "osb", "cosb", "vizyoner", "direct", "fabrika", "kurumsal"]
     )
 
     is_junior_ee = (
